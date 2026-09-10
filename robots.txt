@@ -1,6 +1,4 @@
 User-agent: *
 Allow: /
 
-# Sitemap location
-Sitemap: https://northbharatjobs.com/sitemap.xml
 Sitemap: https://northbharatjobs.pages.dev/sitemap.xml
