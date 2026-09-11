@@ -89,7 +89,6 @@ def update_index():
     content = re.sub(r'Last Updated:\s*\d{1,2}\s+\w+\s+\d{4}', f'Last Updated: {TODAY_DISPLAY}', content, flags=re.IGNORECASE)
     # 4. Any date like 08 Sep 2026 -> today (first occurrence is the header date)
     # Do this only once for the header
-    content = re.sub(r'\b\d{1,2}\s+\w{3}\s+2026\b', TODAY_DISPLAY, content, count=1)
     
     new_jobs = get_all_jobs()
     added = 0
@@ -151,5 +150,5 @@ if __name__ == "__main__":
     print(f"=== REAL FULL SCRAPER START {TODAY_DISPLAY} - 18 sites ===")
     update_index()
     update_sitemap()
-    update_all_page()
-    print("=== DONE - All 18 sites checked + All Page, Auto Date + Jobs updated, Design SAME ===")
+    update_all_pages()
+    print("=== DONE - All 18 sites checked + All Pages, Auto Date + Jobs updated, Design SAME ===")
