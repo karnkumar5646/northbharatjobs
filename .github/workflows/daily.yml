@@ -1,0 +1,29 @@
+name: Real Daily Full Update
+on:
+  schedule:
+    - cron: '30 1 * * *'
+  workflow_dispatch:
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+      - name: Run Full Real Scraper
+        run: python real-job-scraper.py
+      - name: Commit and Push
+        run: |
+          git config user.name "NBJ Bot"
+          git config user.email "bot@northbharatjobs.pages.dev"
+          git add index.html sitemap.xml
+          git diff --staged --quiet && echo "No changes" && exit 0
+          git commit -m "Auto: Full 18 Sites Date+Jobs $(date +%F)"
+          git push
