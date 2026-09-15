@@ -1,0 +1,2 @@
+# Add your real Google AdSense publisher line after approval.
+# Example format supplied by Google: google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
