@@ -12,7 +12,7 @@
     {
       "binding": "DB",
       "database_name": "north_bharat_jobs",
-      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+      "database_id": "afd4241f-4e5c-4b86-ab0a-a870fd0c56f3"
     }
   ],
   "triggers": {
