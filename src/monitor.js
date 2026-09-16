@@ -1,4 +1,4 @@
-import { adapters } from "./sources.js";
+import adapters from "./sources.js";
 import { verifyCandidate, sha256Hex, slugify } from "./verification.js";
 
 const SOURCES_PER_RUN = 4;
