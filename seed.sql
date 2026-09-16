@@ -1,6 +1,6 @@
 INSERT OR IGNORE INTO settings(key,value) VALUES
 ('site_name','North Bharat Jobs'),
-('site_url','https://YOUR-DOMAIN.example'),
+('site_url','northbharatjobs.shantanukumar5646.workers.dev'),
 ('adsense_client',''),
 ('google_site_verification',''),
 ('indexing_api_enabled','0');
