@@ -53,6 +53,24 @@ export default {
     const path = url.pathname;
 
     if (path === "/api/health") return json({ok:true,service:"North Bharat Jobs",time:new Date().toISOString()});
+    
+    if (path === "/api/db-check") {
+  const r = await env.DB
+    .prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM items) AS item_count,
+        (SELECT COUNT(*) FROM sources) AS source_count,
+        (SELECT COUNT(*) FROM monitor_runs) AS monitor_run_count
+    `)
+    .first();
+
+  return json({
+    database_binding: "DB",
+    item_count: Number(r?.item_count || 0),
+    source_count: Number(r?.source_count || 0),
+    monitor_run_count: Number(r?.monitor_run_count || 0)
+  });
+    }
 
     if (path === "/api/monitor") {
       const key = request.headers.get("x-monitor-key");
