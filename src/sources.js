@@ -738,7 +738,7 @@ async function discoverFromSource(source) {
  *
  * Every adapter receives the source row from D1.
  */
-export const adapters = {
+const adapters = {
   generic: discoverFromSource,
 
   /*
@@ -771,3 +771,5 @@ export const adapters = {
   esic: discoverFromSource,
   nta: discoverFromSource
 };
+export { adapters };
+export default adapters;
