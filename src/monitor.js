@@ -7,11 +7,6 @@ const MAX_CANDIDATES_PER_SOURCE = 8;
 export async function runMonitor(env) {
   const started = new Date().toISOString();
 
-  /*
-   * IMPORTANT:
-   * Do not process all sources in one invocation.
-   * We rotate through the sources using last_checked_at.
-   */
   const sourcesResult = await env.DB.prepare(`
     SELECT *
     FROM sources
@@ -43,12 +38,7 @@ export async function runMonitor(env) {
         candidates = [];
       }
 
-      /*
-       * Safety limit:
-       * Never process an unlimited number of candidates from one source.
-       */
       candidates = candidates.slice(0, MAX_CANDIDATES_PER_SOURCE);
-
       discovered += candidates.length;
 
       for (const candidate of candidates) {
@@ -61,19 +51,15 @@ export async function runMonitor(env) {
 
           const slug = `${slugify(candidate.title || "job")}-${hash.slice(0, 10)}`;
 
-          /*
-           * Only one lookup is required.
-           */
           const existing = await env.DB.prepare(`
             SELECT id
             FROM items
             WHERE source_url=?
             LIMIT 1
-          `).bind(candidate.source_url || null).first();
+          `)
+            .bind(candidate.source_url || null)
+            .first();
 
-          /*
-           * Candidate failed verification.
-           */
           if (!verification.publish) {
             blocked++;
 
@@ -87,13 +73,15 @@ export async function runMonitor(env) {
                   details
                 )
                 VALUES(?,?,?,?,?)
-              `).bind(
-                existing.id,
-                "monitor_recheck",
-                0,
-                verification.score,
-                JSON.stringify(verification.evidence)
-              ).run();
+              `)
+                .bind(
+                  existing.id,
+                  "monitor_recheck",
+                  0,
+                  verification.score,
+                  JSON.stringify(verification.evidence)
+                )
+                .run();
             }
 
             continue;
@@ -101,37 +89,43 @@ export async function runMonitor(env) {
 
           const now = new Date().toISOString();
 
+          /*
+           * IMPORTANT:
+           * Exactly 30 values are defined here.
+           * They match exactly with the 30 INSERT columns below.
+           */
+
           const values = [
-            candidate.type || "job",
-            candidate.title || "Untitled",
-            candidate.organization || source.name,
-            candidate.category || null,
-            candidate.location || null,
-            candidate.description || null,
-            candidate.qualification || null,
-            candidate.vacancies || null,
-            candidate.age_limit || null,
-            candidate.fee || null,
-            candidate.selection_process || null,
-            candidate.salary || null,
-            candidate.application_start || null,
-            candidate.last_date || null,
-            candidate.exam_date || null,
-            candidate.date_posted || now.slice(0, 10),
-            candidate.official_url || null,
-            candidate.apply_url || null,
-            candidate.notification_url || null,
-            candidate.source_url || null,
-            source.name,
-            source.id,
-            hash,
-            "published",
-            "verified",
-            verification.score,
-            JSON.stringify(verification.evidence),
-            now,
-            now,
-            now
+            candidate.type || "job",                         // 1
+            candidate.title || "Untitled",                  // 2
+            candidate.organization || source.name,          // 3
+            candidate.category || null,                     // 4
+            candidate.location || null,                     // 5
+            candidate.description || null,                  // 6
+            candidate.qualification || null,                // 7
+            candidate.vacancies || null,                    // 8
+            candidate.age_limit || null,                    // 9
+            candidate.fee || null,                           // 10
+            candidate.selection_process || null,             // 11
+            candidate.salary || null,                        // 12
+            candidate.application_start || null,             // 13
+            candidate.last_date || null,                    // 14
+            candidate.exam_date || null,                    // 15
+            candidate.date_posted || now.slice(0, 10),      // 16
+            candidate.official_url || null,                  // 17
+            candidate.apply_url || null,                     // 18
+            candidate.notification_url || null,              // 19
+            candidate.source_url || null,                    // 20
+            source.name,                                     // 21
+            source.id,                                       // 22
+            hash,                                            // 23
+            "published",                                     // 24
+            "verified",                                      // 25
+            verification.score,                              // 26
+            JSON.stringify(verification.evidence),           // 27
+            now,                                              // 28
+            now,                                              // 29
+            now                                               // 30
           ];
 
           if (existing) {
@@ -166,19 +160,17 @@ export async function runMonitor(env) {
                 evidence_json=?,
                 last_verified_at=?,
                 last_seen_at=?,
-                updated_at=CURRENT_TIMESTAMP
+                published_at=?
               WHERE id=?
-            `).bind(
-              ...values.slice(0, 29),
-              existing.id
-            ).run();
+            `)
+              .bind(
+                ...values,
+                existing.id
+              )
+              .run();
 
             updated++;
           } else {
-            /*
-             * 30 columns = 30 placeholders.
-             * published_at receives the final "now" value.
-             */
             await env.DB.prepare(`
               INSERT INTO items(
                 type,
@@ -218,10 +210,13 @@ export async function runMonitor(env) {
                 ?,?,?,?,?,?,?,?,?,?,
                 ?
               )
-            `).bind(...values).run();
+            `)
+              .bind(...values)
+              .run();
 
             published++;
           }
+
         } catch (candidateError) {
           errors++;
 
@@ -244,11 +239,13 @@ export async function runMonitor(env) {
           last_success_at=?,
           last_error=NULL
         WHERE id=?
-      `).bind(
-        checkedAt,
-        checkedAt,
-        source.id
-      ).run();
+      `)
+        .bind(
+          checkedAt,
+          checkedAt,
+          source.id
+        )
+        .run();
 
     } catch (sourceError) {
       errors++;
@@ -263,11 +260,13 @@ export async function runMonitor(env) {
           last_checked_at=?,
           last_error=?
         WHERE id=?
-      `).bind(
-        new Date().toISOString(),
-        errorMessage,
-        source.id
-      ).run();
+      `)
+        .bind(
+          new Date().toISOString(),
+          errorMessage,
+          source.id
+        )
+        .run();
 
       details.push({
         source: source.name,
@@ -291,17 +290,19 @@ export async function runMonitor(env) {
       details
     )
     VALUES(?,?,?,?,?,?,?,?,?)
-  `).bind(
-    started,
-    finished,
-    sources.length,
-    discovered,
-    published,
-    updated,
-    blocked,
-    errors,
-    JSON.stringify(details)
-  ).run();
+  `)
+    .bind(
+      started,
+      finished,
+      sources.length,
+      discovered,
+      published,
+      updated,
+      blocked,
+      errors,
+      JSON.stringify(details)
+    )
+    .run();
 
   return {
     started,
