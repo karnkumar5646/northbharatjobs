@@ -1088,6 +1088,135 @@ async function discoverFromSource(
 }
 
 /* -------------------------------- */
+/* LIC Golden Jubilee Scholarship   */
+/* -------------------------------- */
+
+async function discoverLIC(source) {
+  const officialUrl =
+    "https://licindia.in/en/web/guest/golden-jubilee-foundation";
+
+  const page = await fetchHtml(officialUrl);
+
+  if (!page.ok) {
+    throw new Error(
+      `LIC Golden Jubilee page HTTP ${
+        page.status || "fetch-error"
+      }`
+    );
+  }
+
+  const links = extractLinks(
+    page.html,
+    officialUrl,
+    LINK_LIMIT
+  );
+
+  /*
+   * Find the current scholarship
+   * application link from LIC page.
+   */
+  const applyLink = links
+    .filter(link => link?.url)
+    .filter(link =>
+      /gjss/i.test(link.url)
+    )
+    .find(link =>
+      !isPdf(link.url, link.text)
+    );
+
+  /*
+   * Find the current scholarship
+   * scheme PDF from LIC page.
+   */
+  const notificationLink = links
+    .filter(link => link?.url)
+    .filter(link =>
+      isPdf(link.url, link.text)
+    )
+    .filter(link =>
+      /golden|jubilee|scholarship|scheme/i.test(
+        `${link.url} ${link.text}`
+      )
+    )
+    .find(link => link.url);
+
+  /*
+   * If LIC changes the URL structure,
+   * do not invent a URL.
+   * Skip publication until the
+   * official page exposes the links.
+   */
+  if (
+    !applyLink ||
+    !notificationLink
+  ) {
+    return [];
+  }
+
+  /*
+   * Extract the current year from
+   * the official page text/title.
+   */
+  const pageText =
+    clean(page.html);
+
+  const years =
+    pageText.match(
+      /\b20\d{2}\b/g
+    ) || [];
+
+  const scholarshipYears =
+    years
+      .map(Number)
+      .filter(year =>
+        year >= 2020 &&
+        year <= 2100
+      );
+
+  const currentYear =
+    scholarshipYears.length
+      ? Math.max(
+          ...scholarshipYears
+        )
+      : new Date()
+          .getUTCFullYear();
+
+  const title =
+    `LIC Golden Jubilee Scholarship Scheme ${currentYear}`;
+
+  return [
+    {
+      type: "scholarship",
+
+      title,
+
+      organization:
+        "Life Insurance Corporation of India (LIC)",
+
+      category:
+        "Scholarship",
+
+      description:
+        `LIC Golden Jubilee Scholarship Scheme ${currentYear}`,
+
+      official_url:
+        officialUrl,
+
+      notification_url:
+        notificationLink.url,
+
+      apply_url:
+        applyLink.url,
+
+      source_url:
+        officialUrl,
+
+      source_name:
+        source.name
+    }
+  ];
+}
+/* -------------------------------- */
 /* Adapter registry                  */
 /* -------------------------------- */
 
@@ -1168,7 +1297,7 @@ const adapters = {
     discoverFromSource,
 
   lic:
-    discoverFromSource,
+    discoverLIC,
 
   epfo:
     discoverFromSource,
