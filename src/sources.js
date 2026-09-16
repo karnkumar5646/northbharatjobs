@@ -1,14 +1,13 @@
 /*
   North Bharat Jobs
-  Conservative official-source discovery engine.
+  Official-source discovery engine
 
   Rules:
   - Never invent URLs.
-  - Only official/allowed domains are accepted.
-  - PDF is notification_url, not official_url.
-  - Apply URL must be a real non-PDF official URL.
-  - Recruitment jobs require three distinct official URLs.
-  - Network requests are deliberately limited for Cloudflare Workers.
+  - Only allowed official domains are accepted.
+  - PDF links are notification links.
+  - Apply links must be real non-PDF links.
+  - Recruitment jobs require three distinct official links.
 */
 
 const COMMON_KEYWORDS = {
@@ -22,6 +21,7 @@ const COMMON_KEYWORDS = {
     "employment",
     "career",
     "job",
+    "jobs",
     "post",
     "posts",
     "engagement",
@@ -123,20 +123,13 @@ const DISCOVERY_WORDS = [
   ...COMMON_KEYWORDS.update
 ];
 
-/*
- * Keep network usage conservative.
- *
- * One source normally needs:
- *   1 request for the source homepage
- *   + at most 2 candidate-page requests
- *
- * This keeps the monitor comfortably below the Workers
- * external-subrequest limit when several sources run together.
- */
-const SOURCE_PAGE_LIMIT = 1;
-const CANDIDATE_PAGE_LIMIT = 2;
 const LINK_LIMIT = 80;
 const CANDIDATE_LIMIT = 8;
+const CANDIDATE_PAGE_LIMIT = 2;
+
+/* ----------------------------- */
+/* Basic helpers                  */
+/* ----------------------------- */
 
 function abs(base, href) {
   try {
@@ -203,7 +196,8 @@ function scoreText(text, words) {
 
   return words.reduce(
     (score, word) =>
-      score + (value.includes(word.toLowerCase()) ? 1 : 0),
+      score +
+      (value.includes(word.toLowerCase()) ? 1 : 0),
     0
   );
 }
@@ -236,24 +230,30 @@ function classify(text) {
 }
 
 function extractTitle(html) {
-  const titleMatch = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(
-    html || ""
-  );
+  const match =
+    /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(
+      html || ""
+    );
 
-  if (!titleMatch) return "";
+  if (!match) return "";
 
   return clean(
-    titleMatch[1].replace(/<[^>]+>/g, " ")
+    match[1].replace(/<[^>]+>/g, " ")
   );
 }
 
-function extractLinks(html, baseUrl, limit = LINK_LIMIT) {
+/* ----------------------------- */
+/* Link extraction                */
+/* ----------------------------- */
+
+function extractLinks(
+  html,
+  baseUrl,
+  limit = LINK_LIMIT
+) {
   const links = [];
   const seen = new Set();
 
-  /*
-   * Standard anchors.
-   */
   const anchorRe =
     /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
 
@@ -283,9 +283,6 @@ function extractLinks(html, baseUrl, limit = LINK_LIMIT) {
     });
   }
 
-  /*
-   * Form actions can expose application portals.
-   */
   const formRe =
     /<form\b[^>]*action=["']([^"']+)["'][^>]*>/gi;
 
@@ -309,14 +306,11 @@ function extractLinks(html, baseUrl, limit = LINK_LIMIT) {
     });
   }
 
-  /*
-   * Explicit data URL attributes.
-   */
-  const urlRe =
+  const dataUrlRe =
     /(?:data-href|data-url|data-link)=["']([^"']+)["']/gi;
 
   while (
-    (match = urlRe.exec(html)) &&
+    (match = dataUrlRe.exec(html)) &&
     links.length < limit
   ) {
     const url = abs(baseUrl, match[1]);
@@ -338,16 +332,22 @@ function extractLinks(html, baseUrl, limit = LINK_LIMIT) {
   return links;
 }
 
+/* ----------------------------- */
+/* Candidate creation             */
+/* ----------------------------- */
+
 function buildCandidate(link, source) {
   if (!link?.url) return null;
 
-  if (!domainAllowed(link.url, source.allowed_domains)) {
+  if (
+    !domainAllowed(
+      link.url,
+      source.allowed_domains
+    )
+  ) {
     return null;
   }
 
-  /*
-   * A PDF can never be the official_url.
-   */
   if (isPdf(link.url, link.text)) {
     return null;
   }
@@ -360,7 +360,6 @@ function buildCandidate(link, source) {
 
   const title =
     clean(link.text) ||
-    clean(extractTitle("")) ||
     "Government Update";
 
   return {
@@ -374,16 +373,30 @@ function buildCandidate(link, source) {
   };
 }
 
-function chooseNotification(links, source, officialUrl) {
+/* ----------------------------- */
+/* Notification selection         */
+/* ----------------------------- */
+
+function chooseNotification(
+  links,
+  source,
+  officialUrl
+) {
   return links
     .filter(link =>
-      domainAllowed(link.url, source.allowed_domains)
+      domainAllowed(
+        link.url,
+        source.allowed_domains
+      )
     )
     .filter(link =>
       isPdf(link.url, link.text)
     )
     .filter(link =>
-      !sameUrl(link.url, officialUrl)
+      !sameUrl(
+        link.url,
+        officialUrl
+      )
     )
     .map(link => ({
       ...link,
@@ -393,23 +406,44 @@ function chooseNotification(links, source, officialUrl) {
       )
     }))
     .filter(link => link.score > 0)
-    .sort((a, b) => b.score - a.score)
+    .sort(
+      (a, b) =>
+        b.score - a.score
+    )
     .find(link => link.score > 0)?.url || null;
 }
 
-function chooseApply(links, source, officialUrl, notificationUrl) {
+/* ----------------------------- */
+/* Apply link selection           */
+/* ----------------------------- */
+
+function chooseApply(
+  links,
+  source,
+  officialUrl,
+  notificationUrl
+) {
   return links
     .filter(link =>
-      domainAllowed(link.url, source.allowed_domains)
+      domainAllowed(
+        link.url,
+        source.allowed_domains
+      )
     )
     .filter(link =>
       !isPdf(link.url, link.text)
     )
     .filter(link =>
-      !sameUrl(link.url, officialUrl)
+      !sameUrl(
+        link.url,
+        officialUrl
+      )
     )
     .filter(link =>
-      !sameUrl(link.url, notificationUrl)
+      !sameUrl(
+        link.url,
+        notificationUrl
+      )
     )
     .map(link => ({
       ...link,
@@ -419,17 +453,24 @@ function chooseApply(links, source, officialUrl, notificationUrl) {
       )
     }))
     .filter(link => link.score > 0)
-    .sort((a, b) => b.score - a.score)
+    .sort(
+      (a, b) =>
+        b.score - a.score
+    )
     .find(link => link.score > 0)?.url || null;
 }
 
-function enrichCandidate(candidate, links, source) {
+/* ----------------------------- */
+/* Candidate enrichment           */
+/* ----------------------------- */
+
+function enrichCandidate(
+  candidate,
+  links,
+  source
+) {
   if (!candidate) return null;
 
-  /*
-   * Non-job sections do not require the three-link
-   * recruitment structure.
-   */
   if (candidate.type !== "job") {
     return {
       ...candidate,
@@ -438,29 +479,36 @@ function enrichCandidate(candidate, links, source) {
     };
   }
 
-  const notificationUrl = chooseNotification(
-    links,
-    source,
-    candidate.official_url
-  );
+  const notificationUrl =
+    chooseNotification(
+      links,
+      source,
+      candidate.official_url
+    );
 
-  const applyUrl = chooseApply(
-    links,
-    source,
-    candidate.official_url,
-    notificationUrl
-  );
+  const applyUrl =
+    chooseApply(
+      links,
+      source,
+      candidate.official_url,
+      notificationUrl
+    );
 
-  /*
-   * Recruitment jobs are published only when all
-   * three roles are available and distinct.
-   */
   if (
     !notificationUrl ||
     !applyUrl ||
-    sameUrl(candidate.official_url, notificationUrl) ||
-    sameUrl(candidate.official_url, applyUrl) ||
-    sameUrl(notificationUrl, applyUrl)
+    sameUrl(
+      candidate.official_url,
+      notificationUrl
+    ) ||
+    sameUrl(
+      candidate.official_url,
+      applyUrl
+    ) ||
+    sameUrl(
+      notificationUrl,
+      applyUrl
+    )
   ) {
     return null;
   }
@@ -472,18 +520,25 @@ function enrichCandidate(candidate, links, source) {
   };
 }
 
+/* ----------------------------- */
+/* Fetch official HTML            */
+/* ----------------------------- */
+
 async function fetchHtml(url) {
   try {
-    const response = await fetch(url, {
-      method: "GET",
-      redirect: "follow",
-      headers: {
-        "User-Agent":
-          "NorthBharatJobsBot/1.0 (+official-source-monitor)",
-        "Accept":
-          "text/html,application/xhtml+xml"
+    const response = await fetch(
+      url,
+      {
+        method: "GET",
+        redirect: "follow",
+        headers: {
+          "User-Agent":
+            "NorthBharatJobsBot/1.0 (+official-source-monitor)",
+          "Accept":
+            "text/html,application/xhtml+xml"
+        }
       }
-    });
+    );
 
     if (!response.ok) {
       return {
@@ -494,11 +549,10 @@ async function fetchHtml(url) {
     }
 
     const contentType =
-      response.headers.get("content-type") || "";
+      response.headers.get(
+        "content-type"
+      ) || "";
 
-    /*
-     * We only parse HTML.
-     */
     if (
       !/text\/html|application\/xhtml\+xml/i.test(
         contentType
@@ -511,7 +565,8 @@ async function fetchHtml(url) {
       };
     }
 
-    const html = await response.text();
+    const html =
+      await response.text();
 
     return {
       ok: true,
@@ -527,37 +582,16 @@ async function fetchHtml(url) {
   }
 }
 
-function candidateLinksFromPage(html, pageUrl, source) {
-  const links = extractLinks(
-    html,
-    pageUrl,
-    LINK_LIMIT
-  );
+/* ----------------------------- */
+/* Main discovery adapter         */
+/* ----------------------------- */
 
-  return links
-    .filter(link =>
-      domainAllowed(
-        link.url,
-        source.allowed_domains
-      )
-    )
-    .filter(link =>
-      !isPdf(link.url, link.text)
-    )
-    .filter(link =>
-      scoreText(
-        `${link.text} ${link.url}`,
-        DISCOVERY_WORDS
-      ) > 0
-    )
-    .map(link =>
-      buildCandidate(link, source)
-    )
-    .filter(Boolean);
-}
-
-async function discoverFromSource(source) {
-  if (!source?.base_url) return [];
+async function discoverFromSource(
+  source
+) {
+  if (!source?.base_url) {
+    return [];
+  }
 
   if (
     !domainAllowed(
@@ -568,98 +602,104 @@ async function discoverFromSource(source) {
     return [];
   }
 
+  const homepage =
+    await fetchHtml(
+      source.base_url
+    );
+
+  if (!homepage.ok) {
+    throw new Error(
+      `HTTP ${homepage.status || "fetch-error"}`
+    );
+  }
+
+  const homepageLinks =
+    extractLinks(
+      homepage.html,
+      source.base_url,
+      LINK_LIMIT
+    );
+
   const discovered = [];
   const seenOfficial = new Set();
 
-  /*
-   * One source homepage request.
-   */
-  const homepage = await fetchHtml(source.base_url);
-
-  if (!homepage.ok) {
-    return [];
-  }
-
-  const homepageLinks = extractLinks(
-    homepage.html,
-    source.base_url,
-    LINK_LIMIT
-  );
-
-  /*
-   * Direct candidates from the homepage.
-   */
   for (const link of homepageLinks) {
-    const candidate = buildCandidate(
-      link,
-      source
-    );
+    const candidate =
+      buildCandidate(
+        link,
+        source
+      );
 
     if (!candidate) continue;
 
-    if (seenOfficial.has(candidate.official_url)) {
+    if (
+      seenOfficial.has(
+        candidate.official_url
+      )
+    ) {
       continue;
     }
 
-    seenOfficial.add(candidate.official_url);
+    seenOfficial.add(
+      candidate.official_url
+    );
 
     discovered.push({
       candidate,
       pageHtml: null,
-      pageUrl: candidate.official_url
+      pageUrl:
+        candidate.official_url
     });
 
-    if (discovered.length >= CANDIDATE_LIMIT) {
+    if (
+      discovered.length >=
+      CANDIDATE_LIMIT
+    ) {
       break;
     }
   }
 
-  /*
-   * If the homepage itself does not expose enough
-   * useful details, inspect at most two candidate pages.
-   */
-  let inspectedPages = 0;
+  /* Inspect a small number of candidate pages */
+  let inspected = 0;
 
   for (
-    const entry of discovered.slice(
-      0,
-      CANDIDATE_PAGE_LIMIT
-    )
+    const entry of discovered
   ) {
     if (
-      inspectedPages >= CANDIDATE_PAGE_LIMIT
+      inspected >=
+      CANDIDATE_PAGE_LIMIT
     ) {
       break;
     }
 
-    /*
-     * The homepage may already have enough links.
-     * Still inspect only a small number of pages
-     * so that application/notification URLs can be
-     * found without excessive Worker requests.
-     */
-    const page = await fetchHtml(
-      entry.pageUrl
-    );
+    const page =
+      await fetchHtml(
+        entry.pageUrl
+      );
 
-    inspectedPages++;
+    inspected++;
 
     if (!page.ok) continue;
 
-    entry.pageHtml = page.html;
+    entry.pageHtml =
+      page.html;
   }
 
   const results = [];
 
-  for (const entry of discovered) {
-    let links = homepageLinks;
+  for (
+    const entry of discovered
+  ) {
+    let links =
+      homepageLinks;
 
     if (entry.pageHtml) {
-      const pageLinks = extractLinks(
-        entry.pageHtml,
-        entry.pageUrl,
-        LINK_LIMIT
-      );
+      const pageLinks =
+        extractLinks(
+          entry.pageHtml,
+          entry.pageUrl,
+          LINK_LIMIT
+        );
 
       links = [
         ...homepageLinks,
@@ -667,18 +707,23 @@ async function discoverFromSource(source) {
       ];
     }
 
-    /*
-     * Deduplicate combined links.
-     */
     const uniqueLinks = [];
-    const seen = new Set();
+    const seen =
+      new Set();
 
-    for (const link of links) {
+    for (
+      const link of links
+    ) {
       if (!link?.url) continue;
 
-      const normalized = link.url.split("#")[0];
+      const normalized =
+        link.url.split("#")[0];
 
-      if (seen.has(normalized)) continue;
+      if (
+        seen.has(normalized)
+      ) {
+        continue;
+      }
 
       seen.add(normalized);
 
@@ -688,20 +733,24 @@ async function discoverFromSource(source) {
       });
     }
 
-    /*
-     * Use the candidate's own page title when available.
-     */
-    let title = entry.candidate.title;
+    let title =
+      entry.candidate.title;
 
     if (entry.pageHtml) {
       const pageTitle =
-        extractTitle(entry.pageHtml);
+        extractTitle(
+          entry.pageHtml
+        );
 
       if (
         pageTitle &&
         pageTitle.length >= 8
       ) {
-        title = pageTitle.slice(0, 300);
+        title =
+          pageTitle.slice(
+            0,
+            300
+          );
       }
     }
 
@@ -710,17 +759,25 @@ async function discoverFromSource(source) {
       title
     };
 
-    const enriched = enrichCandidate(
-      candidate,
-      uniqueLinks,
-      source
+    const enriched =
+      enrichCandidate(
+        candidate,
+        uniqueLinks,
+        source
+      );
+
+    if (!enriched) {
+      continue;
+    }
+
+    results.push(
+      enriched
     );
 
-    if (!enriched) continue;
-
-    results.push(enriched);
-
-    if (results.length >= CANDIDATE_LIMIT) {
+    if (
+      results.length >=
+      CANDIDATE_LIMIT
+    ) {
       break;
     }
   }
@@ -728,48 +785,119 @@ async function discoverFromSource(source) {
   return results;
 }
 
-/*
- * Adapter registry.
- *
- * IMPORTANT:
- * monitor.js imports this exact named export:
- *
- *   import { adapters } from "./sources.js";
- *
- * Every adapter receives the source row from D1.
- */
+/* -------------------------------- */
+/* Adapter registry                  */
+/* -------------------------------- */
+
 const adapters = {
-  generic: discoverFromSource,
+
+  generic:
+    discoverFromSource,
+
+  ssc:
+    discoverFromSource,
+
+  upsc:
+    discoverFromSource,
+
+  "upsc-online":
+    discoverFromSource,
+
+  ncs:
+    discoverFromSource,
+
+  rrb:
+    discoverFromSource,
+
+  railway:
+    discoverFromSource,
+
+  "railway-recruitment-boards":
+    discoverFromSource,
+
+  "india-post":
+    discoverFromSource,
+
+  "indian-post":
+    discoverFromSource,
+
+  ibps:
+    discoverFromSource,
+
+  sbi:
+    discoverFromSource,
+
+  rbi:
+    discoverFromSource,
+
+  bpsc:
+    discoverFromSource,
+
+  bssc:
+    discoverFromSource,
+
+  "bihar-police":
+    discoverFromSource,
+
+  "indian-army":
+    discoverFromSource,
 
   /*
-   * Official-source aliases.
-   *
-   * These deliberately use the same conservative discovery
-   * engine unless a source later needs a specialized parser.
-   */
-  ssc: discoverFromSource,
-  upsc: discoverFromSource,
-  "upsc-online": discoverFromSource,
-  ncs: discoverFromSource,
-  rrb: discoverFromSource,
-  railway: discoverFromSource,
-  "railway-recruitment-boards": discoverFromSource,
-  "india-post": discoverFromSource,
-  ibps: discoverFromSource,
-  sbi: discoverFromSource,
-  rbi: discoverFromSource,
-  bpsc: discoverFromSource,
-  bssc: discoverFromSource,
-  "bihar-police": discoverFromSource,
-  "indian-army": discoverFromSource,
-  "indian-navy": discoverFromSource,
-  "indian-air-force": discoverFromSource,
-  drdo: discoverFromSource,
-  isro: discoverFromSource,
-  lic: discoverFromSource,
-  epfo: discoverFromSource,
-  esic: discoverFromSource,
-  nta: discoverFromSource
+    IMPORTANT:
+    Database may contain "army".
+  */
+  army:
+    discoverFromSource,
+
+  "indian-navy":
+    discoverFromSource,
+
+  /*
+    IMPORTANT:
+    Database may contain "navy".
+  */
+  navy:
+    discoverFromSource,
+
+  "indian-air-force":
+    discoverFromSource,
+
+  /*
+    IMPORTANT:
+    Database may contain "airforce".
+  */
+  airforce:
+    discoverFromSource,
+
+  drdo:
+    discoverFromSource,
+
+  isro:
+    discoverFromSource,
+
+  lic:
+    discoverFromSource,
+
+  epfo:
+    discoverFromSource,
+
+  esic:
+    discoverFromSource,
+
+  nta:
+    discoverFromSource
 };
-export { adapters };
+
+/*
+  Export both named and default.
+  This makes the module compatible with:
+  import { adapters } from "./sources.js";
+  and
+  import adapters from "./sources.js";
+*/
+
+export {
+  adapters
+};
+
 export default adapters;
