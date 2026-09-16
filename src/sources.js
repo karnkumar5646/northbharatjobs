@@ -112,20 +112,33 @@ const NOTIFICATION_WORDS = [
   "notice pdf"
 ];
 
-const DISCOVERY_WORDS = [
-  ...COMMON_KEYWORDS.job,
-  ...COMMON_KEYWORDS.admit_card,
-  ...COMMON_KEYWORDS.result,
-  ...COMMON_KEYWORDS.answer_key,
-  ...COMMON_KEYWORDS.syllabus,
-  ...COMMON_KEYWORDS.admission,
-  ...COMMON_KEYWORDS.scholarship,
-  ...COMMON_KEYWORDS.update
+const SECTION_WORDS = [
+  "recruitment",
+  "recruitments",
+  "career",
+  "careers",
+  "vacancy",
+  "vacancies",
+  "employment",
+  "jobs",
+  "job",
+  "notifications",
+  "notification",
+  "advertisement",
+  "advertisements",
+  "latest notice",
+  "notices",
+  "notice",
+  "opportunities",
+  "current openings",
+  "online application",
+  "recruitment notice"
 ];
 
-const LINK_LIMIT = 80;
+const LINK_LIMIT = 120;
 const CANDIDATE_LIMIT = 8;
-const CANDIDATE_PAGE_LIMIT = 2;
+const SECTION_PAGE_LIMIT = 6;
+const CANDIDATE_PAGE_LIMIT = 6;
 
 /* ----------------------------- */
 /* Basic helpers                  */
@@ -183,7 +196,10 @@ function sameUrl(a, b) {
     const ub = new URL(b);
 
     ua.hash = "";
+    ua.href = ua.href.replace(/\/$/, "");
+
     ub.hash = "";
+    ub.href = ub.href.replace(/\/$/, "");
 
     return ua.href === ub.href;
   } catch {
@@ -333,10 +349,96 @@ function extractLinks(
 }
 
 /* ----------------------------- */
+/* Section-page discovery         */
+/* ----------------------------- */
+
+function isUsefulSectionLink(
+  link,
+  source
+) {
+  if (!link?.url) return false;
+
+  if (
+    !domainAllowed(
+      link.url,
+      source.allowed_domains
+    )
+  ) {
+    return false;
+  }
+
+  if (isPdf(link.url, link.text)) {
+    return false;
+  }
+
+  const text = clean(
+    `${link.text} ${link.url}`
+  ).toLowerCase();
+
+  return SECTION_WORDS.some(word =>
+    text.includes(word.toLowerCase())
+  );
+}
+
+function chooseSectionPages(
+  links,
+  source
+) {
+  const selected = [];
+  const seen = new Set();
+
+  const scored = links
+    .filter(link =>
+      isUsefulSectionLink(
+        link,
+        source
+      )
+    )
+    .map(link => ({
+      ...link,
+      score: scoreText(
+        `${link.text} ${link.url}`,
+        SECTION_WORDS
+      )
+    }))
+    .sort(
+      (a, b) =>
+        b.score - a.score
+    );
+
+  for (const link of scored) {
+    const normalized =
+      link.url.split("#")[0];
+
+    if (seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    selected.push({
+      url: normalized,
+      text: link.text
+    });
+
+    if (
+      selected.length >=
+      SECTION_PAGE_LIMIT
+    ) {
+      break;
+    }
+  }
+
+  return selected;
+}
+
+/* ----------------------------- */
 /* Candidate creation             */
 /* ----------------------------- */
 
-function buildCandidate(link, source) {
+function buildCandidate(
+  link,
+  source
+) {
   if (!link?.url) return null;
 
   if (
@@ -352,15 +454,42 @@ function buildCandidate(link, source) {
     return null;
   }
 
-  const type = classify(
-    `${link.text} ${link.url}`
-  );
+  const combined =
+    `${link.text} ${link.url}`;
+
+  const type =
+    classify(combined);
 
   if (!type) return null;
 
   const title =
     clean(link.text) ||
     "Government Update";
+
+  /*
+   * Avoid publishing generic navigation labels.
+   */
+  const badTitles = [
+    "home",
+    "login",
+    "contact",
+    "about us",
+    "privacy policy",
+    "terms",
+    "menu",
+    "click here",
+    "read more",
+    "view more",
+    "website"
+  ];
+
+  if (
+    badTitles.includes(
+      title.toLowerCase()
+    )
+  ) {
+    return null;
+  }
 
   return {
     type,
@@ -390,7 +519,10 @@ function chooseNotification(
       )
     )
     .filter(link =>
-      isPdf(link.url, link.text)
+      isPdf(
+        link.url,
+        link.text
+      )
     )
     .filter(link =>
       !sameUrl(
@@ -405,12 +537,16 @@ function chooseNotification(
         NOTIFICATION_WORDS
       )
     }))
-    .filter(link => link.score > 0)
+    .filter(link =>
+      link.score > 0
+    )
     .sort(
       (a, b) =>
         b.score - a.score
     )
-    .find(link => link.score > 0)?.url || null;
+    .find(link =>
+      link.score > 0
+    )?.url || null;
 }
 
 /* ----------------------------- */
@@ -431,7 +567,10 @@ function chooseApply(
       )
     )
     .filter(link =>
-      !isPdf(link.url, link.text)
+      !isPdf(
+        link.url,
+        link.text
+      )
     )
     .filter(link =>
       !sameUrl(
@@ -452,12 +591,16 @@ function chooseApply(
         APPLY_WORDS
       )
     }))
-    .filter(link => link.score > 0)
+    .filter(link =>
+      link.score > 0
+    )
     .sort(
       (a, b) =>
         b.score - a.score
     )
-    .find(link => link.score > 0)?.url || null;
+    .find(link =>
+      link.score > 0
+    )?.url || null;
 }
 
 /* ----------------------------- */
@@ -471,7 +614,9 @@ function enrichCandidate(
 ) {
   if (!candidate) return null;
 
-  if (candidate.type !== "job") {
+  if (
+    candidate.type !== "job"
+  ) {
     return {
       ...candidate,
       notification_url: null,
@@ -494,9 +639,18 @@ function enrichCandidate(
       notificationUrl
     );
 
+  /*
+   * Recruitment jobs must have
+   * three different official URLs.
+   */
   if (
     !notificationUrl ||
-    !applyUrl ||
+    !applyUrl
+  ) {
+    return null;
+  }
+
+  if (
     sameUrl(
       candidate.official_url,
       notificationUrl
@@ -515,8 +669,10 @@ function enrichCandidate(
 
   return {
     ...candidate,
-    notification_url: notificationUrl,
-    apply_url: applyUrl
+    notification_url:
+      notificationUrl,
+    apply_url:
+      applyUrl
   };
 }
 
@@ -526,24 +682,27 @@ function enrichCandidate(
 
 async function fetchHtml(url) {
   try {
-    const response = await fetch(
-      url,
-      {
-        method: "GET",
-        redirect: "follow",
-        headers: {
-          "User-Agent":
-            "NorthBharatJobsBot/1.0 (+official-source-monitor)",
-          "Accept":
-            "text/html,application/xhtml+xml"
+    const response =
+      await fetch(
+        url,
+        {
+          method: "GET",
+          redirect: "follow",
+          cache: "no-store",
+          headers: {
+            "User-Agent":
+              "NorthBharatJobsBot/1.0 (+official-source-monitor)",
+            "Accept":
+              "text/html,application/xhtml+xml"
+          }
         }
-      }
-    );
+      );
 
     if (!response.ok) {
       return {
         ok: false,
-        status: response.status,
+        status:
+          response.status,
         html: ""
       };
     }
@@ -553,31 +712,48 @@ async function fetchHtml(url) {
         "content-type"
       ) || "";
 
+    /*
+     * Some government servers omit
+     * a useful content-type.
+     * Therefore we still inspect
+     * the body if it looks like HTML.
+     */
+    const html =
+      await response.text();
+
     if (
       !/text\/html|application\/xhtml\+xml/i.test(
         contentType
+      ) &&
+      !/<html[\s>]/i.test(
+        html.slice(0, 5000)
       )
     ) {
       return {
         ok: false,
-        status: response.status,
+        status:
+          response.status,
         html: ""
       };
     }
 
-    const html =
-      await response.text();
-
     return {
       ok: true,
-      status: response.status,
+      status:
+        response.status,
       html
     };
-  } catch {
+
+  } catch (error) {
     return {
       ok: false,
       status: 0,
-      html: ""
+      html: "",
+      error:
+        String(
+          error?.message ||
+          error
+        )
     };
   }
 }
@@ -602,6 +778,9 @@ async function discoverFromSource(
     return [];
   }
 
+  /*
+   * 1. Fetch homepage.
+   */
   const homepage =
     await fetchHtml(
       source.base_url
@@ -609,10 +788,16 @@ async function discoverFromSource(
 
   if (!homepage.ok) {
     throw new Error(
-      `HTTP ${homepage.status || "fetch-error"}`
+      `HTTP ${
+        homepage.status ||
+        "fetch-error"
+      }`
     );
   }
 
+  /*
+   * 2. Extract homepage links.
+   */
   const homepageLinks =
     extractLinks(
       homepage.html,
@@ -620,50 +805,143 @@ async function discoverFromSource(
       LINK_LIMIT
     );
 
-  const discovered = [];
-  const seenOfficial = new Set();
+  /*
+   * 3. Find recruitment/
+   *    notification/career pages.
+   */
+  const sectionPages =
+    chooseSectionPages(
+      homepageLinks,
+      source
+    );
 
-  for (const link of homepageLinks) {
+  /*
+   * 4. Fetch section pages.
+   */
+  const allLinks = [
+    ...homepageLinks
+  ];
+
+  let sectionCount = 0;
+
+  for (
+    const section of sectionPages
+  ) {
+    if (
+      sectionCount >=
+      SECTION_PAGE_LIMIT
+    ) {
+      break;
+    }
+
+    const page =
+      await fetchHtml(
+        section.url
+      );
+
+    sectionCount++;
+
+    if (!page.ok) {
+      continue;
+    }
+
+    const pageLinks =
+      extractLinks(
+        page.html,
+        section.url,
+        LINK_LIMIT
+      );
+
+    allLinks.push(
+      ...pageLinks
+    );
+  }
+
+  /*
+   * 5. Deduplicate links.
+   */
+  const uniqueLinks = [];
+  const seenLinks = new Set();
+
+  for (
+    const link of allLinks
+  ) {
+    if (!link?.url) continue;
+
+    const normalized =
+      link.url.split("#")[0];
+
+    if (
+      seenLinks.has(
+        normalized
+      )
+    ) {
+      continue;
+    }
+
+    seenLinks.add(
+      normalized
+    );
+
+    uniqueLinks.push({
+      ...link,
+      url: normalized
+    });
+  }
+
+  /*
+   * 6. Build candidates.
+   */
+  const candidates = [];
+  const seenCandidates =
+    new Set();
+
+  for (
+    const link of uniqueLinks
+  ) {
     const candidate =
       buildCandidate(
         link,
         source
       );
 
-    if (!candidate) continue;
+    if (!candidate) {
+      continue;
+    }
 
     if (
-      seenOfficial.has(
+      seenCandidates.has(
         candidate.official_url
       )
     ) {
       continue;
     }
 
-    seenOfficial.add(
+    seenCandidates.add(
       candidate.official_url
     );
 
-    discovered.push({
-      candidate,
-      pageHtml: null,
-      pageUrl:
-        candidate.official_url
-    });
+    candidates.push(
+      candidate
+    );
 
     if (
-      discovered.length >=
+      candidates.length >=
       CANDIDATE_LIMIT
     ) {
       break;
     }
   }
 
-  /* Inspect a small number of candidate pages */
+  /*
+   * 7. Enrich candidates.
+   */
+  const results = [];
+
   let inspected = 0;
 
   for (
-    const entry of discovered
+    const candidate of candidates
   ) {
     if (
       inspected >=
@@ -672,43 +950,40 @@ async function discoverFromSource(
       break;
     }
 
+    /*
+     * Fetch candidate page so
+     * notification/apply links
+     * can be found there.
+     */
     const page =
       await fetchHtml(
-        entry.pageUrl
+        candidate.official_url
       );
 
     inspected++;
 
-    if (!page.ok) continue;
-
-    entry.pageHtml =
-      page.html;
-  }
-
-  const results = [];
-
-  for (
-    const entry of discovered
-  ) {
     let links =
-      homepageLinks;
+      uniqueLinks;
 
-    if (entry.pageHtml) {
-      const pageLinks =
+    if (page.ok) {
+      const candidateLinks =
         extractLinks(
-          entry.pageHtml,
-          entry.pageUrl,
+          page.html,
+          candidate.official_url,
           LINK_LIMIT
         );
 
       links = [
-        ...homepageLinks,
-        ...pageLinks
+        ...uniqueLinks,
+        ...candidateLinks
       ];
     }
 
-    const uniqueLinks = [];
-    const seen =
+    /*
+     * Deduplicate again.
+     */
+    const localLinks = [];
+    const localSeen =
       new Set();
 
     for (
@@ -720,58 +995,85 @@ async function discoverFromSource(
         link.url.split("#")[0];
 
       if (
-        seen.has(normalized)
+        localSeen.has(
+          normalized
+        )
       ) {
         continue;
       }
 
-      seen.add(normalized);
+      localSeen.add(
+        normalized
+      );
 
-      uniqueLinks.push({
+      localLinks.push({
         ...link,
         url: normalized
       });
     }
 
-    let title =
-      entry.candidate.title;
+    let finalCandidate =
+      enrichCandidate(
+        candidate,
+        localLinks,
+        source
+      );
 
-    if (entry.pageHtml) {
+    /*
+     * For non-job types,
+     * enrichCandidate can return
+     * the candidate directly.
+     */
+    if (!finalCandidate) {
+      continue;
+    }
+
+    /*
+     * Use page title only when
+     * the original link title is
+     * clearly generic.
+     */
+    if (
+      page.ok
+    ) {
       const pageTitle =
         extractTitle(
-          entry.pageHtml
+          page.html
         );
 
       if (
         pageTitle &&
-        pageTitle.length >= 8
+        pageTitle.length >= 8 &&
+        !/^(home|login|notice|notices)$/i.test(
+          pageTitle
+        )
       ) {
-        title =
-          pageTitle.slice(
-            0,
-            300
+        /*
+         * Do not replace a useful
+         * recruitment title with
+         * a generic site title.
+         */
+        const generic =
+          /official website|home page|welcome|homepage/i.test(
+            pageTitle
           );
+
+        if (!generic) {
+          finalCandidate = {
+            ...finalCandidate,
+            title:
+              finalCandidate.title ||
+              pageTitle.slice(
+                0,
+                300
+              )
+          };
+        }
       }
     }
 
-    const candidate = {
-      ...entry.candidate,
-      title
-    };
-
-    const enriched =
-      enrichCandidate(
-        candidate,
-        uniqueLinks,
-        source
-      );
-
-    if (!enriched) {
-      continue;
-    }
-
     results.push(
-      enriched
+      finalCandidate
     );
 
     if (
@@ -790,7 +1092,6 @@ async function discoverFromSource(
 /* -------------------------------- */
 
 const adapters = {
-
   generic:
     discoverFromSource,
 
@@ -813,6 +1114,9 @@ const adapters = {
     discoverFromSource,
 
   "railway-recruitment-boards":
+    discoverFromSource,
+
+  indiapost:
     discoverFromSource,
 
   "india-post":
@@ -839,34 +1143,22 @@ const adapters = {
   "bihar-police":
     discoverFromSource,
 
+  army:
+    discoverFromSource,
+
   "indian-army":
     discoverFromSource,
 
-  /*
-    IMPORTANT:
-    Database may contain "army".
-  */
-  army:
+  navy:
     discoverFromSource,
 
   "indian-navy":
     discoverFromSource,
 
-  /*
-    IMPORTANT:
-    Database may contain "navy".
-  */
-  navy:
+  airforce:
     discoverFromSource,
 
   "indian-air-force":
-    discoverFromSource,
-
-  /*
-    IMPORTANT:
-    Database may contain "airforce".
-  */
-  airforce:
     discoverFromSource,
 
   drdo:
@@ -889,12 +1181,15 @@ const adapters = {
 };
 
 /*
-  Export both named and default.
-  This makes the module compatible with:
-  import { adapters } from "./sources.js";
-  and
-  import adapters from "./sources.js";
-*/
+ * Both exports are intentional.
+ * monitor.js currently uses:
+ *
+ * import adapters from "./sources.js";
+ *
+ * Older code can also use:
+ *
+ * import { adapters } from "./sources.js";
+ */
 
 export {
   adapters
