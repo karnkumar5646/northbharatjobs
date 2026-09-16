@@ -1,39 +1,50 @@
 /*
   North Bharat Jobs
-  Conservative official-source discovery.
+  Conservative official-source discovery engine.
 
-  URL roles:
-    official_url     = official recruitment/detail page
-    notification_url = official notification PDF
-    apply_url        = official application page/form
-
-  No URL is invented.
-  A homepage is never reused as all three roles.
+  Rules:
+  - Never invent URLs.
+  - Only official/allowed domains are accepted.
+  - PDF is notification_url, not official_url.
+  - Apply URL must be a real non-PDF official URL.
+  - Recruitment jobs require three distinct official URLs.
+  - Network requests are deliberately limited for Cloudflare Workers.
 */
 
 const COMMON_KEYWORDS = {
   job: [
     "recruitment",
+    "recruitment notice",
+    "recruitment notification",
     "vacancy",
-    "notification",
+    "vacancies",
     "advertisement",
-    "career",
     "employment",
+    "career",
+    "job",
     "post",
-    "recruitment notice"
+    "posts",
+    "engagement",
+    "selection post",
+    "direct recruitment"
   ],
 
   admit_card: [
     "admit card",
+    "admit-card",
     "hall ticket",
-    "call letter"
+    "call letter",
+    "download admit"
   ],
 
   result: [
     "result",
+    "results",
     "score card",
+    "scorecard",
     "merit list",
-    "selection list"
+    "selection list",
+    "final result"
   ],
 
   answer_key: [
@@ -45,12 +56,14 @@ const COMMON_KEYWORDS = {
 
   syllabus: [
     "syllabus",
-    "exam pattern"
+    "exam pattern",
+    "scheme of examination"
   ],
 
   admission: [
     "admission",
     "entrance",
+    "entrance examination",
     "application"
   ],
 
@@ -61,24 +74,29 @@ const COMMON_KEYWORDS = {
 
   update: [
     "corrigendum",
-    "notice",
     "important notice",
+    "notice",
     "exam date",
     "city intimation",
-    "correction"
+    "correction",
+    "schedule",
+    "latest update"
   ]
 };
 
 const APPLY_WORDS = [
   "apply online",
+  "apply now",
   "online application",
   "application form",
-  "apply now",
+  "application portal",
+  "apply",
   "registration",
   "register online",
   "online registration",
-  "application portal",
-  "application link"
+  "candidate registration",
+  "application link",
+  "online form"
 ];
 
 const NOTIFICATION_WORDS = [
@@ -88,8 +106,21 @@ const NOTIFICATION_WORDS = [
   "official notification",
   "recruitment notice",
   "vacancy notice",
+  "employment notice",
   "notification pdf",
-  "advertisement pdf"
+  "advertisement pdf",
+  "notice pdf"
+];
+
+const DISCOVERY_WORDS = [
+  ...COMMON_KEYWORDS.job,
+  ...COMMON_KEYWORDS.admit_card,
+  ...COMMON_KEYWORDS.result,
+  ...COMMON_KEYWORDS.answer_key,
+  ...COMMON_KEYWORDS.syllabus,
+  ...COMMON_KEYWORDS.admission,
+  ...COMMON_KEYWORDS.scholarship,
+  ...COMMON_KEYWORDS.update
 ];
 
 function abs(base, href) {
@@ -136,6 +167,16 @@ function isPdf(url, text = "") {
   );
 }
 
+function sameUrl(a, b) {
+  if (!a || !b) return false;
+
+  try {
+    return new URL(a).href === new URL(b).href;
+  } catch {
+    return a === b;
+  }
+}
+
 function scoreText(text, words) {
   const value = clean(text).toLowerCase();
 
@@ -150,14 +191,14 @@ function classify(text) {
   const value = clean(text).toLowerCase();
 
   /*
-   * Job is checked first because "recruitment application"
-   * should normally be treated as a recruitment item.
+   * More specific types first.
+   * "recruitment application" should remain a job candidate.
    */
   const orderedTypes = [
     "job",
     "admit_card",
-    "result",
     "answer_key",
+    "result",
     "syllabus",
     "admission",
     "scholarship",
@@ -165,9 +206,11 @@ function classify(text) {
   ];
 
   for (const type of orderedTypes) {
-    const words = COMMON_KEYWORDS[type];
-
-    if (words.some(word => value.includes(word))) {
+    if (
+      COMMON_KEYWORDS[type].some(word =>
+        value.includes(word.toLowerCase())
+      )
+    ) {
       return type;
     }
   }
@@ -175,81 +218,113 @@ function classify(text) {
   return null;
 }
 
-function extractLinks(html, baseUrl, limit = 60) {
+function extractLinks(html, baseUrl, limit = 100) {
   const links = [];
+  const seen = new Set();
 
+  /*
+   * Standard anchors.
+   */
   const anchorRe =
     /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
 
   let match;
 
-  while ((match = anchorRe.exec(html)) && links.length < limit) {
+  while (
+    (match = anchorRe.exec(html)) &&
+    links.length < limit
+  ) {
     const url = abs(baseUrl, match[1]);
 
     const text = clean(
       match[2].replace(/<[^>]+>/g, " ")
     );
 
-    if (!url || !text) continue;
+    if (!url) continue;
+
+    const normalized = url.split("#")[0];
+
+    if (seen.has(normalized)) continue;
+
+    seen.add(normalized);
 
     links.push({
-      url,
-      text
+      url: normalized,
+      text: text || normalized
     });
   }
 
   /*
-   * Some application portals expose their destination
-   * through a form action.
+   * Form actions can expose application portals.
    */
   const formRe =
     /<form\b[^>]*action=["']([^"']+)["'][^>]*>/gi;
 
-  while ((match = formRe.exec(html)) && links.length < limit) {
+  while (
+    (match = formRe.exec(html)) &&
+    links.length < limit
+  ) {
     const url = abs(baseUrl, match[1]);
 
     if (!url) continue;
 
+    const normalized = url.split("#")[0];
+
+    if (seen.has(normalized)) continue;
+
+    seen.add(normalized);
+
     links.push({
-      url,
+      url: normalized,
       text: "online application form"
+    });
+  }
+
+  /*
+   * Some portals put useful URLs in buttons or script-generated
+   * attributes. These are only added when an explicit URL exists.
+   */
+  const urlRe =
+    /(?:href|data-href|data-url|data-link)=["']([^"']+)["']/gi;
+
+  while (
+    (match = urlRe.exec(html)) &&
+    links.length < limit
+  ) {
+    const url = abs(baseUrl, match[1]);
+
+    if (!url) continue;
+
+    const normalized = url.split("#")[0];
+
+    if (seen.has(normalized)) continue;
+
+    seen.add(normalized);
+
+    links.push({
+      url: normalized,
+      text: normalized
     });
   }
 
   return links;
 }
 
-async function fetchHtml(url, fetchImpl = fetch) {
-  const response = await fetchImpl(url, {
-    headers: {
-      "User-Agent":
-        "NorthBharatJobsBot/2.2 (+official-source-monitor)",
-      "Accept":
-        "text/html,application/xhtml+xml"
-    },
-    redirect: "follow"
-  });
+function buildCandidate(link, source) {
+  const type = classify(
+    `${link.text} ${link.url}`
+  );
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-
-  const contentType =
-    response.headers.get("content-type") || "";
-
-  if (
-    !/text\/html|application\/xhtml\+xml/i.test(
-      contentType
-    )
-  ) {
-    return null;
-  }
-
-  const html = await response.text();
+  if (!type) return null;
 
   return {
-    html,
-    finalUrl: response.url || url
+    type,
+    title: clean(link.text).slice(0, 300),
+    organization: source.name,
+    official_url: link.url,
+    source_url: link.url,
+    source_name: source.name,
+    description: clean(link.text).slice(0, 500)
   };
 }
 
@@ -268,16 +343,20 @@ function chooseNotification(links, source) {
         NOTIFICATION_WORDS
       )
     }))
-    .sort((a, b) => b.score - a.score)[0]?.url || null;
+    .sort((a, b) => b.score - a.score)
+    .find(link => link.score > 0)?.url || null;
 }
 
-function chooseApply(links, source) {
+function chooseApply(links, source, officialUrl) {
   return links
     .filter(link =>
       domainAllowed(link.url, source.allowed_domains)
     )
     .filter(link =>
       !isPdf(link.url, link.text)
+    )
+    .filter(link =>
+      !sameUrl(link.url, officialUrl)
     )
     .map(link => ({
       ...link,
@@ -287,288 +366,6 @@ function chooseApply(links, source) {
       )
     }))
     .filter(link => link.score > 0)
-    .sort((a, b) => b.score - a.score)[0]?.url || null;
+    .sort((a, b) => b.score - a.score)
+    .find(link => link.score > 0)?.url || null;
 }
-
-async function resolveOfficialLinks(
-  candidate,
-  source,
-  fetchImpl = fetch
-) {
-  const officialCandidate =
-    candidate.official_url;
-
-  /*
-   * A PDF can never be the official detail page.
-   */
-  if (
-    !officialCandidate ||
-    isPdf(
-      officialCandidate,
-      candidate.title
-    )
-  ) {
-    return {
-      ...candidate,
-      official_url: null,
-      notification_url: null,
-      apply_url: null
-    };
-  }
-
-  /*
-   * Only source-approved domains are allowed.
-   */
-  if (
-    !domainAllowed(
-      officialCandidate,
-      source.allowed_domains
-    )
-  ) {
-    return {
-      ...candidate,
-      official_url: null,
-      notification_url: null,
-      apply_url: null
-    };
-  }
-
-  let page;
-
-  try {
-    page = await fetchHtml(
-      officialCandidate,
-      fetchImpl
-    );
-  } catch {
-    return {
-      ...candidate,
-      notification_url: null,
-      apply_url: null
-    };
-  }
-
-  if (!page) {
-    return {
-      ...candidate,
-      notification_url: null,
-      apply_url: null
-    };
-  }
-
-  const officialUrl =
-    domainAllowed(
-      page.finalUrl,
-      source.allowed_domains
-    )
-      ? page.finalUrl
-      : officialCandidate;
-
-  /*
-   * Keep the number of links examined small.
-   */
-  const links = extractLinks(
-    page.html,
-    page.finalUrl,
-    60
-  );
-
-  const notification =
-    chooseNotification(
-      links,
-      source
-    );
-
-  const apply =
-    chooseApply(
-      links,
-      source
-    );
-
-  /*
-   * Every role must remain genuinely different.
-   */
-  const sameUrl = (a, b) =>
-    Boolean(a && b && a === b);
-
-  /*
-   * Recruitment jobs require all three official roles.
-   */
-  if (candidate.type === "job") {
-    if (
-      !officialUrl ||
-      !notification ||
-      !apply ||
-      sameUrl(officialUrl, notification) ||
-      sameUrl(officialUrl, apply) ||
-      sameUrl(notification, apply)
-    ) {
-      return {
-        ...candidate,
-        official_url: null,
-        notification_url: null,
-        apply_url: null
-      };
-    }
-  }
-
-  return {
-    ...candidate,
-    official_url: officialUrl,
-    notification_url: notification,
-    apply_url: apply
-  };
-}
-
-export async function genericDiscovery(
-  source,
-  fetchImpl = fetch
-) {
-  const response = await fetchImpl(
-    source.base_url,
-    {
-      headers: {
-        "User-Agent":
-          "NorthBharatJobsBot/2.2 (+official-source-monitor)",
-        "Accept":
-          "text/html,application/xhtml+xml"
-      },
-      redirect: "follow"
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(
-      `HTTP ${response.status}`
-    );
-  }
-
-  const contentType =
-    response.headers.get("content-type") || "";
-
-  if (
-    !/text\/html|application\/xhtml\+xml/i.test(
-      contentType
-    )
-  ) {
-    return [];
-  }
-
-  const html = await response.text();
-
-  const links = extractLinks(
-    html,
-    response.url || source.base_url,
-    80
-  );
-
-  /*
-   * First classify links locally.
-   * No network request is made here.
-   */
-  const candidates = [];
-
-  const seen = new Set();
-
-  for (const link of links) {
-    if (candidates.length >= 12) break;
-
-    if (
-      !link.url ||
-      !link.text ||
-      link.text.length < 8
-    ) {
-      continue;
-    }
-
-    if (
-      !domainAllowed(
-        link.url,
-        source.allowed_domains
-      )
-    ) {
-      continue;
-    }
-
-    if (isPdf(link.url, link.text)) {
-      continue;
-    }
-
-    const type = classify(link.text);
-
-    if (!type) continue;
-
-    /*
-     * Avoid duplicate URLs.
-     */
-    const normalized =
-      link.url.split("#")[0];
-
-    if (seen.has(normalized)) {
-      continue;
-    }
-
-    seen.add(normalized);
-
-    candidates.push({
-      type,
-      title: link.text,
-      organization: source.name,
-      official_url: normalized,
-      source_url: normalized,
-      source_name: source.name,
-      description: link.text
-    });
-  }
-
-  /*
-   * Resolve only a small number of candidates.
-   * This is the important subrequest protection.
-   */
-  const resolved = [];
-
-  for (const candidate of candidates) {
-    if (resolved.length >= 8) break;
-
-    const item =
-      await resolveOfficialLinks(
-        candidate,
-        source,
-        fetchImpl
-      );
-
-    /*
-     * Keep candidates even when verification fails.
-     * verification.js decides whether they publish.
-     */
-    resolved.push(item);
-  }
-
-  return resolved;
-}
-
-export const adapters = {
-  generic: genericDiscovery,
-
-  ssc: genericDiscovery,
-  upsc: genericDiscovery,
-  ncs: genericDiscovery,
-  railway: genericDiscovery,
-  indiapost: genericDiscovery,
-  ibps: genericDiscovery,
-  sbi: genericDiscovery,
-  rbi: genericDiscovery,
-  bpsc: genericDiscovery,
-  bssc: genericDiscovery,
-  "bihar-police": genericDiscovery,
-  "upsc-online": genericDiscovery,
-  army: genericDiscovery,
-  navy: genericDiscovery,
-  airforce: genericDiscovery,
-  drdo: genericDiscovery,
-  isro: genericDiscovery,
-  lic: genericDiscovery,
-  epfo: genericDiscovery,
-  esic: genericDiscovery,
-  nta: genericDiscovery
-};
