@@ -1419,119 +1419,259 @@ async function discoverLIC(source) {
         `${pageTitle} ${normalized}`
       );
 
-    /*
-     * Process the current page when it
-     * looks like an actual LIC update.
-     */
+    /  /*
+ * --------------------------------
+ * Process BOTH seed pages and
+ * discovered LIC pages.
+ *
+ * Seed pages can directly contain
+ * official notification and apply links.
+ * --------------------------------
+ */
+
+const relevantLinks =
+  links.filter(
+    link =>
+      link?.url
+  );
+
+const hasRelevantContent =
+  relevant(pageContext) ||
+  relevantLinks.some(
+    link =>
+      relevant(
+        textOf(link)
+      )
+  );
+
+if (
+  hasRelevantContent
+) {
+  const directType =
+    classifyLIC(
+      pageContext
+    );
+
+  let type =
+    directType;
+
+  /*
+   * Infer type from links when
+   * the page title itself is generic.
+   */
+  if (!type) {
     if (
-      depth > 0 &&
-      relevant(pageContext)
+      relevantLinks.some(
+        link =>
+          /scholarship|fellowship|education|student/.test(
+            textOf(link)
+          )
+      )
     ) {
-      const type =
-        classifyLIC(
-          pageContext
-        );
+      type =
+        "scholarship";
+    } else if (
+      relevantLinks.some(
+        link =>
+          /recruitment|vacancy|vacancies|career|careers|employment|job|jobs|officer|assistant|engineer|aao|ado|apprentice|engagement/.test(
+            textOf(link)
+          )
+      )
+    ) {
+      type =
+        "job";
+    } else if (
+      relevantLinks.some(
+        link =>
+          /admit card|hall ticket|call letter/.test(
+            textOf(link)
+          )
+      )
+    ) {
+      type =
+        "admit-card";
+    } else if (
+      relevantLinks.some(
+        link =>
+          /answer key|provisional key|final key/.test(
+            textOf(link)
+          )
+      )
+    ) {
+      type =
+        "answer-key";
+    } else if (
+      relevantLinks.some(
+        link =>
+          /\bresult\b|results|scorecard|merit list|selection list/.test(
+            textOf(link)
+          )
+      )
+    ) {
+      type =
+        "result";
+    } else if (
+      relevantLinks.some(
+        link =>
+          /syllabus|exam pattern|scheme of examination/.test(
+            textOf(link)
+          )
+      )
+    ) {
+      type =
+        "syllabus";
+    } else if (
+      relevantLinks.some(
+        link =>
+          /application|registration|admission|entrance/.test(
+            textOf(link)
+          )
+      )
+    ) {
+      type =
+        "admission";
+    } else if (
+      relevantLinks.some(
+        link =>
+          /notification|advertisement|notice|corrigendum|schedule|latest update/.test(
+            textOf(link)
+          )
+      )
+    ) {
+      type =
+        "update";
+    }
+  }
 
-      if (type) {
-        const notificationUrl =
-          choosePDF(
-            links,
-            normalized,
-            pageContext
-          );
+  if (type) {
+    const notificationUrl =
+      choosePDF(
+        relevantLinks,
+        normalized,
+        pageContext
+      );
 
-        const applyUrl =
-          chooseApply(
-            links,
+    const applyUrl =
+      chooseApply(
+        relevantLinks,
+        normalized,
+        notificationUrl,
+        pageContext
+      );
+
+    const titleLink =
+      relevantLinks
+        .filter(
+          link =>
+            relevant(
+              textOf(link)
+            )
+        )
+        .sort(
+          (a, b) =>
+            scoreText(
+              textOf(b),
+              SECTION_WORDS
+            ) -
+            scoreText(
+              textOf(a),
+              SECTION_WORDS
+            )
+        )[0];
+
+    const title =
+      buildTitle(
+        pageTitle,
+        titleLink?.text || "",
+        normalized
+      );
+
+    const requiresThreeLinks =
+      type === "job";
+
+    const validThreeLinks =
+      Boolean(
+        notificationUrl
+      ) &&
+      Boolean(
+        applyUrl
+      ) &&
+      !sameUrl(
+        normalized,
+        notificationUrl
+      ) &&
+      !sameUrl(
+        normalized,
+        applyUrl
+      ) &&
+      !sameUrl(
+        notificationUrl,
+        applyUrl
+      );
+
+    if (
+      !requiresThreeLinks ||
+      validThreeLinks
+    ) {
+      const key =
+        normalized;
+
+      if (
+        !seen.has(key)
+      ) {
+        seen.add(key);
+
+        candidates.push({
+          type,
+
+          title:
+            title.slice(
+              0,
+              300
+            ),
+
+          organization:
+            "Life Insurance Corporation of India (LIC)",
+
+          category:
+            type === "job"
+              ? "LIC Recruitment"
+              : type === "scholarship"
+              ? "Scholarship"
+              : type === "admit-card"
+              ? "LIC Admit Card"
+              : type === "answer-key"
+              ? "LIC Answer Key"
+              : type === "result"
+              ? "LIC Result"
+              : type === "syllabus"
+              ? "LIC Syllabus"
+              : type === "admission"
+              ? "LIC Admission"
+              : "LIC Official Update",
+
+          description:
+            `Official LIC ${type} update: ${title}`,
+
+          official_url:
             normalized,
+
+          notification_url:
             notificationUrl,
-            pageContext
-          );
 
-        const title =
-          buildTitle(
-            pageTitle,
-            "",
-            normalized
-          );
+          apply_url:
+            applyUrl,
 
-        /*
-         * For recruitment/application
-         * records we do not publish unless
-         * the official notification and
-         * application URLs are actually found.
-         */
-        const requiresThreeLinks =
-          type === "job";
-
-        const validThreeLinks =
-          notificationUrl &&
-          applyUrl &&
-          !sameUrl(
+          source_url:
             normalized,
-            notificationUrl
-          ) &&
-          !sameUrl(
-            normalized,
-            applyUrl
-          ) &&
-          !sameUrl(
-            notificationUrl,
-            applyUrl
-          );
 
-        if (
-          !requiresThreeLinks ||
-          validThreeLinks
-        ) {
-          const key =
-            normalized;
-
-          if (
-            !seen.has(key)
-          ) {
-            seen.add(key);
-
-            candidates.push({
-              type,
-
-              title:
-                title.slice(
-                  0,
-                  300
-                ),
-
-              organization:
-                "Life Insurance Corporation of India (LIC)",
-
-              category:
-                type === "job"
-                  ? "LIC Recruitment"
-                  : type === "scholarship"
-                  ? "Scholarship"
-                  : "LIC Official Update",
-
-              description:
-                `Official LIC ${type} update: ${title}`,
-
-              official_url:
-                normalized,
-
-              notification_url:
-                notificationUrl,
-
-              apply_url:
-                applyUrl,
-
-              source_url:
-                normalized,
-
-              source_name:
-                source.name
-            });
-          }
-        }
+          source_name:
+            source.name
+        });
       }
+    }
+  }
+        } 
     }
 
     /*
