@@ -1239,93 +1239,101 @@ async function discoverLIC(source) {
     return score;
   }
 
-  function choosePDF(
-    links,
-    officialUrl,
-    context
-  ) {
-    return links
-      .filter(link => link?.url)
-      .filter(link =>
-        domainAllowed(
-          link.url,
-          source.allowed_domains
-        )
+ function choosePDF(
+  links,
+  officialUrl,
+  context
+) {
+  return links
+    .filter(link => link?.url)
+    .filter(link =>
+      isPdf(
+        link.url,
+        link.text
       )
-      .filter(link =>
-        isPdf(
-          link.url,
-          link.text
-        )
+    )
+    .filter(link =>
+      !sameUrl(
+        link.url,
+        officialUrl
       )
-      .filter(link =>
-        !sameUrl(
-          link.url,
-          officialUrl
-        )
+    )
+    .map(link => ({
+      ...link,
+      score: pdfScore(
+        link,
+        context
       )
-      .map(link => ({
-        ...link,
-        score: pdfScore(
-          link,
-          context
-        )
-      }))
-      .filter(link =>
-        link.score > 0
-      )
-      .sort(
-        (a, b) =>
-          b.score - a.score
-      )[0]?.url || null;
-  }
+    }))
+    .filter(link =>
+      link.score >= 50
+    )
+    .sort(
+      (a, b) =>
+        b.score - a.score
+    )[0]?.url || null;
+ } 
 
   function chooseApply(
-    links,
-    officialUrl,
-    notificationUrl,
-    context
-  ) {
-    return links
-      .filter(link => link?.url)
-      .filter(link =>
-        domainAllowed(
-          link.url,
-          source.allowed_domains
-        )
+  links,
+  officialUrl,
+  notificationUrl,
+  context
+) {
+  return links
+    .filter(link => link?.url)
+    .filter(link =>
+      !isPdf(
+        link.url,
+        link.text
       )
-      .filter(link =>
-        !isPdf(
-          link.url,
-          link.text
-        )
+    )
+    .filter(link =>
+      !sameUrl(
+        link.url,
+        officialUrl
       )
-      .filter(link =>
-        !sameUrl(
-          link.url,
-          officialUrl
-        )
+    )
+    .filter(link =>
+      !sameUrl(
+        link.url,
+        notificationUrl
       )
-      .filter(link =>
-        !sameUrl(
-          link.url,
-          notificationUrl
-        )
+    )
+    .map(link => ({
+      ...link,
+      score: applyScore(
+        link,
+        context
       )
-      .map(link => ({
-        ...link,
-        score: applyScore(
-          link,
-          context
-        )
-      }))
-      .filter(link =>
-        link.score > 0
-      )
-      .sort(
-        (a, b) =>
-          b.score - a.score
-      )[0]?.url || null;
+    }))
+    .filter(link =>
+      link.score >= 80
+    )
+    .sort(
+      (a, b) =>
+        b.score - a.score
+    )
+    .find(link => {
+      try {
+        const host =
+          new URL(link.url)
+            .hostname
+            .toLowerCase();
+
+        /*
+         * Accept LIC main domain,
+         * LIC subdomains and the official
+         * application domain linked by LIC.
+         */
+        return (
+          host === "licindia.in" ||
+          host.endsWith(".licindia.in")
+        );
+      } catch {
+        return false;
+      }
+    })?.url || null;
   }
 
   function buildTitle(
