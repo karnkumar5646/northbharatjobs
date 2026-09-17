@@ -1088,133 +1088,315 @@ async function discoverFromSource(
 }
 
 /* -------------------------------- */
-/* LIC Golden Jubilee Scholarship   */
+/* LIC Smart Automatic Discovery    */
 /* -------------------------------- */
 
 async function discoverLIC(source) {
-  const officialUrl =
-    "https://licindia.in/en/web/guest/golden-jubilee-foundation";
-
-  const page = await fetchHtml(officialUrl);
-
-  if (!page.ok) {
-    throw new Error(
-      `LIC Golden Jubilee page HTTP ${
-        page.status || "fetch-error"
-      }`
-    );
-  }
-
-  const links = extractLinks(
-    page.html,
-    officialUrl,
-    LINK_LIMIT
-  );
-
-  /*
-   * Find the current scholarship
-   * application link from LIC page.
-   */
-  const applyLink = links
-    .filter(link => link?.url)
-    .filter(link =>
-      /gjss/i.test(link.url)
-    )
-    .find(link =>
-      !isPdf(link.url, link.text)
-    );
-
-  /*
-   * Find the current scholarship
-   * scheme PDF from LIC page.
-   */
-  const notificationLink = links
-    .filter(link => link?.url)
-    .filter(link =>
-      isPdf(link.url, link.text)
-    )
-    .filter(link =>
-      /golden|jubilee|scholarship|scheme/i.test(
-        `${link.url} ${link.text}`
-      )
-    )
-    .find(link => link.url);
-
-  /*
-   * If LIC changes the URL structure,
-   * do not invent a URL.
-   * Skip publication until the
-   * official page exposes the links.
-   */
-  if (
-    !applyLink ||
-    !notificationLink
-  ) {
-    return [];
-  }
-
-  /*
-   * Extract the current year from
-   * the official page text/title.
-   */
-  const pageText =
-    clean(page.html);
-
-  const years =
-    pageText.match(
-      /\b20\d{2}\b/g
-    ) || [];
-
-  const scholarshipYears =
-    years
-      .map(Number)
-      .filter(year =>
-        year >= 2020 &&
-        year <= 2100
-      );
-
-  const currentYear =
-    scholarshipYears.length
-      ? Math.max(
-          ...scholarshipYears
-        )
-      : new Date()
-          .getUTCFullYear();
-
-  const title =
-    `LIC Golden Jubilee Scholarship Scheme ${currentYear}`;
-
-  return [
+  const LIC_PAGES = [
     {
-      type: "scholarship",
-
-      title,
-
-      organization:
-        "Life Insurance Corporation of India (LIC)",
-
-      category:
-        "Scholarship",
-
-      description:
-        `LIC Golden Jubilee Scholarship Scheme ${currentYear}`,
-
-      official_url:
-        officialUrl,
-
-      notification_url:
-        notificationLink.url,
-
-      apply_url:
-        applyLink.url,
-
-      source_url:
-        officialUrl,
-
-      source_name:
-        source.name
+      url:
+        "https://licindia.in/en/web/guest/careers",
+      section: "career"
+    },
+    {
+      url:
+        "https://licindia.in/en/web/guest/golden-jubilee-foundation",
+      section: "scholarship"
     }
   ];
+
+  const candidates = [];
+
+  for (const pageInfo of LIC_PAGES) {
+    try {
+      const page =
+        await fetchHtml(pageInfo.url);
+
+      if (!page.ok) {
+        continue;
+      }
+
+      const links = extractLinks(
+        page.html,
+        pageInfo.url,
+        LINK_LIMIT
+      );
+
+      for (const link of links) {
+        if (!link?.url) continue;
+
+        const url = link.url;
+        const text =
+          clean(link.text || "");
+
+        const combined =
+          `${text} ${url}`.toLowerCase();
+
+        /*
+         * Ignore obvious non-job/business pages.
+         */
+        const irrelevant =
+          /insurance|policy|premium|claim|calculator|customer|branch locator|agent portal|mylic|download app/i
+            .test(combined);
+
+        if (irrelevant) {
+          continue;
+        }
+
+        /*
+         * Identify useful LIC content.
+         */
+        const isCareer =
+          /recruit|career|vacancy|vacancies|job|assistant|officer|engineer|aao|ado|apprentice|employment/i
+            .test(combined);
+
+        const isScholarship =
+          /scholarship|golden jubilee|education|student/i
+            .test(combined);
+
+        const isNotice =
+          /notice|notification|result|admit card|answer key|corrigendum|shortlist|scorecard|exam/i
+            .test(combined);
+
+        /*
+         * Only keep relevant LIC
+         * government-job / scholarship
+         * type information.
+         */
+        if (
+          !isCareer &&
+          !isScholarship &&
+          !isNotice
+        ) {
+          continue;
+        }
+
+        /*
+         * Ignore generic navigation links.
+         */
+        if (
+          /^(home|careers|contact us|about us|login|search|privacy policy)$/i
+            .test(text.trim())
+        ) {
+          continue;
+        }
+
+        /*
+         * Determine item type.
+         */
+        let type = "other";
+
+        if (isScholarship) {
+          type = "scholarship";
+        } else if (isCareer) {
+          type = "job";
+        } else if (/result/i.test(combined)) {
+          type = "result";
+        } else if (/admit card|call letter/i.test(combined)) {
+          type = "admit-card";
+        } else if (/answer key/i.test(combined)) {
+          type = "answer-key";
+        } else if (/syllabus/i.test(combined)) {
+          type = "syllabus";
+        } else if (/notice|notification|corrigendum/i.test(combined)) {
+          type = "notice";
+        }
+
+        /*
+         * Make sure the title is useful.
+         */
+        const title =
+          text ||
+          extractTitle(page.html) ||
+          "LIC Official Update";
+
+        /*
+         * Do not publish a bare PDF as the
+         * official page unless it is the
+         * actual notification.
+         */
+        let notificationUrl = null;
+
+        if (isPdf(url, text)) {
+          notificationUrl = url;
+        }
+
+        /*
+         * Apply links are non-PDF links
+         * containing application language.
+         */
+        let applyUrl = null;
+
+        if (
+          !isPdf(url, text) &&
+          /apply|application|registration|online application|click here/i
+            .test(combined)
+        ) {
+          applyUrl = url;
+        }
+
+        /*
+         * For a page/detail link, inspect it
+         * and search inside it for notification
+         * and application links.
+         */
+        if (
+          !isPdf(url, text) &&
+          (
+            isCareer ||
+            isScholarship ||
+            isNotice
+          )
+        ) {
+          try {
+            const detail =
+              await fetchHtml(url);
+
+            if (detail.ok) {
+              const detailLinks =
+                extractLinks(
+                  detail.html,
+                  url,
+                  LINK_LIMIT
+                );
+
+              /*
+               * Find notification PDF.
+               */
+              const pdf =
+                detailLinks
+                  .filter(x => x?.url)
+                  .filter(x =>
+                    isPdf(
+                      x.url,
+                      x.text
+                    )
+                  )
+                  .find(x =>
+                    /notification|employment|recruit|scholarship|scheme|notice|corrigendum/i
+                      .test(
+                        `${x.text || ""} ${x.url}`
+                      )
+                  );
+
+              if (pdf) {
+                notificationUrl =
+                  pdf.url;
+              }
+
+              /*
+               * Find actual application URL.
+               */
+              const application =
+                detailLinks
+                  .filter(x => x?.url)
+                  .filter(x =>
+                    !isPdf(
+                      x.url,
+                      x.text
+                    )
+                  )
+                  .filter(x =>
+                    /apply|application|registration|online|new registration|click here/i
+                      .test(
+                        `${x.text || ""} ${x.url}`
+                      )
+                  )
+                  .find(x =>
+                    !sameUrl(
+                      x.url,
+                      notificationUrl
+                    )
+                  );
+
+              if (application) {
+                applyUrl =
+                  application.url;
+              }
+            }
+          } catch {
+            /*
+             * Detail-page failure should not
+             * stop the rest of LIC discovery.
+             */
+          }
+        }
+
+        /*
+         * Prevent duplicate candidates.
+         */
+        const duplicate =
+          candidates.some(
+            item =>
+              sameUrl(
+                item.source_url,
+                url
+              )
+          );
+
+        if (duplicate) {
+          continue;
+        }
+
+        candidates.push({
+          type,
+
+          title,
+
+          organization:
+            "Life Insurance Corporation of India (LIC)",
+
+          category:
+            type === "scholarship"
+              ? "Scholarship"
+              : type === "job"
+              ? "LIC Recruitment"
+              : "LIC Official Update",
+
+          description:
+            `Official LIC ${type} update: ${title}`,
+
+          official_url:
+            url,
+
+          notification_url:
+            notificationUrl,
+
+          apply_url:
+            applyUrl,
+
+          /*
+           * Keep the discovered official
+           * source link as the identity.
+           */
+          source_url:
+            url,
+
+          source_name:
+            source.name
+        });
+
+        /*
+         * Keep the number of candidates
+         * controlled for Worker limits.
+         */
+        if (
+          candidates.length >=
+          CANDIDATE_LIMIT
+        ) {
+          break;
+        }
+      }
+    } catch {
+      /*
+       * One LIC section failing must not
+       * stop another LIC section.
+       */
+      continue;
+    }
+  }
+
+  return candidates;
 }
 /* -------------------------------- */
 /* Adapter registry                  */
