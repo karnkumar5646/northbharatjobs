@@ -1092,40 +1092,34 @@ async function discoverFromSource(
 /* -------------------------------- */
 
 async function discoverLIC(source) {
-  /*
-   * These are stable LIC section pages,
-   * not year-specific recruitment/scholarship URLs.
-   * New/future notices are discovered from
-   * the links published on these official pages.
-   */
   const seedPages = [
     "https://licindia.in/en/web/guest/careers",
     "https://licindia.in/en/web/guest/golden-jubilee-foundation"
   ];
 
   const candidates = [];
-  const visitedPages = new Set();
-  const seenOfficialUrls = new Set();
+  const visited = new Set();
+  const seen = new Set();
 
-  const MAX_SEED_PAGES = 2;
-  const MAX_DISCOVERY_PAGES = 12;
-  const MAX_LINKS_PER_PAGE = 150;
+  const MAX_PAGES = 20;
+  const MAX_LINKS = 200;
 
-  function isRelevantLIC(text) {
-    return /recruit|recruitment|career|vacancy|vacancies|employment|job|jobs|officer|assistant|engineer|aao|ado|apprentice|scholarship|fellowship|education|student|notification|advertisement|notice|result|admit card|answer key|corrigendum|shortlist|scorecard|exam|application|registration/i
+  function textOf(link) {
+    return clean(
+      `${link?.text || ""} ${link?.url || ""}`
+    );
+  }
+
+  function relevant(text) {
+    return /recruit|recruitment|career|vacancy|vacancies|employment|job|jobs|officer|assistant|engineer|aao|ado|apprentice|scholarship|fellowship|education|student|notification|advertisement|notice|result|admit card|answer key|corrigendum|shortlist|scorecard|exam|application|registration|selection|engagement/i
       .test(text);
   }
 
-  function isGenericLICTitle(title) {
-    return /^(home|homepage|careers|career|contact us|about us|login|search|menu|read more|click here|view more|website|official website)$/i
-      .test(clean(title));
-  }
-
-  function getType(text) {
+  function classifyLIC(text) {
     const value = clean(text).toLowerCase();
 
     if (
-      /scholarship|fellowship/.test(value)
+      /scholarship|fellowship|education|student/.test(value)
     ) {
       return "scholarship";
     }
@@ -1155,19 +1149,19 @@ async function discoverLIC(source) {
     }
 
     if (
-      /recruitment|vacancy|vacancies|advertisement|employment|career|job|jobs|officer|assistant|engineer|aao|ado|apprentice|direct recruitment/.test(value)
+      /recruitment|vacancy|vacancies|employment|career|job|jobs|officer|assistant|engineer|aao|ado|apprentice|engagement|direct recruitment/.test(value)
     ) {
       return "job";
     }
 
     if (
-      /admission|entrance|application|registration/.test(value)
+      /application|registration|admission|entrance/.test(value)
     ) {
       return "admission";
     }
 
     if (
-      /notice|notification|corrigendum|important notice|exam date|schedule|latest update/.test(value)
+      /notice|notification|corrigendum|advertisement|exam date|schedule|latest update/.test(value)
     ) {
       return "update";
     }
@@ -1175,9 +1169,80 @@ async function discoverLIC(source) {
     return null;
   }
 
-  function chooseNotificationPDF(
+  function isGenericTitle(title) {
+    return /^(home|homepage|careers|career|contact us|about us|login|search|menu|read more|click here|view more|official website)$/i
+      .test(clean(title));
+  }
+
+  function pdfScore(link, context) {
+    const text = clean(
+      `${link?.text || ""} ${link?.url || ""} ${context || ""}`
+    ).toLowerCase();
+
+    let score = 0;
+
+    if (/notification|advertisement|detailed advertisement/.test(text)) {
+      score += 100;
+    }
+
+    if (/recruitment|employment|vacancy|vacancies/.test(text)) {
+      score += 80;
+    }
+
+    if (/scholarship|fellowship|education/.test(text)) {
+      score += 80;
+    }
+
+    if (/scheme|instructions|guidelines|notice|corrigendum/.test(text)) {
+      score += 50;
+    }
+
+    if (/202[0-9]/.test(text)) {
+      score += 10;
+    }
+
+    return score;
+  }
+
+  function applyScore(link, context) {
+    const text = clean(
+      `${link?.text || ""} ${link?.url || ""} ${context || ""}`
+    ).toLowerCase();
+
+    let score = 0;
+
+    if (
+      /apply here|apply online|online application/.test(text)
+    ) {
+      score += 120;
+    }
+
+    if (/application|registration|register/.test(text)) {
+      score += 90;
+    }
+
+    if (/apply|click here/.test(text)) {
+      score += 50;
+    }
+
+    /*
+     * Avoid unrelated LIC links such as
+     * customer portals, policy services,
+     * certificate pages, etc.
+     */
+    if (
+      /certificate|premium|policy|claim|customer|branch locator|agent portal|login|mylic|download app|calculator/.test(text)
+    ) {
+      score -= 200;
+    }
+
+    return score;
+  }
+
+  function choosePDF(
     links,
-    officialUrl
+    officialUrl,
+    context
   ) {
     return links
       .filter(link => link?.url)
@@ -1201,34 +1266,25 @@ async function discoverLIC(source) {
       )
       .map(link => ({
         ...link,
-        score: scoreText(
-          `${link.text} ${link.url}`,
-          [
-            "notification",
-            "advertisement",
-            "recruitment",
-            "employment",
-            "scheme",
-            "scholarship",
-            "notice",
-            "corrigendum",
-            "detailed advertisement"
-          ]
+        score: pdfScore(
+          link,
+          context
         )
       }))
+      .filter(link =>
+        link.score > 0
+      )
       .sort(
         (a, b) =>
           b.score - a.score
-      )
-      .find(link =>
-        link.score > 0
-      )?.url || null;
+      )[0]?.url || null;
   }
 
-  function chooseApplyURL(
+  function chooseApply(
     links,
     officialUrl,
-    notificationUrl
+    notificationUrl,
+    context
   ) {
     return links
       .filter(link => link?.url)
@@ -1258,21 +1314,48 @@ async function discoverLIC(source) {
       )
       .map(link => ({
         ...link,
-        score: scoreText(
-          `${link.text} ${link.url}`,
-          APPLY_WORDS
+        score: applyScore(
+          link,
+          context
         )
       }))
+      .filter(link =>
+        link.score > 0
+      )
       .sort(
         (a, b) =>
           b.score - a.score
-      )
-      .find(link =>
-        link.score > 0
-      )?.url || null;
+      )[0]?.url || null;
   }
 
-  async function inspectPage(
+  function buildTitle(
+    pageTitle,
+    linkText,
+    url
+  ) {
+    const candidates = [
+      clean(pageTitle),
+      clean(linkText),
+      clean(
+        url
+          .split("/")
+          .pop()
+          ?.replace(
+            /[-_]+/g,
+            " "
+          )
+      )
+    ];
+
+    return candidates.find(
+      value =>
+        value &&
+        !isGenericTitle(value) &&
+        value.length > 3
+    ) || "LIC Official Update";
+  }
+
+  async function inspect(
     pageUrl,
     depth = 0
   ) {
@@ -1280,33 +1363,42 @@ async function discoverLIC(source) {
       return;
     }
 
-    if (
-      visitedPages.has(pageUrl)
-    ) {
+    const normalized =
+      pageUrl.split("#")[0];
+
+    if (visited.has(normalized)) {
       return;
     }
 
     if (
-      visitedPages.size >=
-      MAX_DISCOVERY_PAGES
+      visited.size >=
+      MAX_PAGES
     ) {
       return;
     }
 
-    visitedPages.add(pageUrl);
+    visited.add(normalized);
 
-    const page =
-      await fetchHtml(pageUrl);
+    let page;
 
-    if (!page.ok) {
+    try {
+      page =
+        await fetchHtml(
+          normalized
+        );
+    } catch {
       return;
     }
 
-    const pageLinks =
+    if (!page?.ok) {
+      return;
+    }
+
+    const links =
       extractLinks(
         page.html,
-        pageUrl,
-        MAX_LINKS_PER_PAGE
+        normalized,
+        MAX_LINKS
       );
 
     const pageTitle =
@@ -1314,89 +1406,83 @@ async function discoverLIC(source) {
         page.html
       );
 
-    const pageText =
+    const pageContext =
       clean(
-        `${pageTitle} ${pageUrl}`
+        `${pageTitle} ${normalized}`
       );
 
     /*
-     * If the page itself represents
-     * a useful LIC update, process it.
+     * Process the current page when it
+     * looks like an actual LIC update.
      */
     if (
       depth > 0 &&
-      isRelevantLIC(pageText)
+      relevant(pageContext)
     ) {
       const type =
-        getType(pageText);
+        classifyLIC(
+          pageContext
+        );
 
       if (type) {
-        const title =
-          !isGenericLICTitle(pageTitle)
-            ? pageTitle
-            : clean(
-                pageUrl
-                  .split("/")
-                  .pop()
-                  ?.replace(
-                    /[-_]+/g,
-                    " "
-                  )
-              );
-
         const notificationUrl =
-          chooseNotificationPDF(
-            pageLinks,
-            pageUrl
+          choosePDF(
+            links,
+            normalized,
+            pageContext
           );
 
         const applyUrl =
-          chooseApplyURL(
-            pageLinks,
-            pageUrl,
-            notificationUrl
+          chooseApply(
+            links,
+            normalized,
+            notificationUrl,
+            pageContext
+          );
+
+        const title =
+          buildTitle(
+            pageTitle,
+            "",
+            normalized
           );
 
         /*
-         * Recruitment jobs must have
-         * three distinct official URLs.
+         * For recruitment/application
+         * records we do not publish unless
+         * the official notification and
+         * application URLs are actually found.
          */
+        const requiresThreeLinks =
+          type === "job";
+
+        const validThreeLinks =
+          notificationUrl &&
+          applyUrl &&
+          !sameUrl(
+            normalized,
+            notificationUrl
+          ) &&
+          !sameUrl(
+            normalized,
+            applyUrl
+          ) &&
+          !sameUrl(
+            notificationUrl,
+            applyUrl
+          );
+
         if (
-          type === "job" &&
-          (
-            !notificationUrl ||
-            !applyUrl ||
-            sameUrl(
-              pageUrl,
-              notificationUrl
-            ) ||
-            sameUrl(
-              pageUrl,
-              applyUrl
-            ) ||
-            sameUrl(
-              notificationUrl,
-              applyUrl
-            )
-          )
+          !requiresThreeLinks ||
+          validThreeLinks
         ) {
-          /*
-           * Do not publish an unverified
-           * recruitment candidate.
-           */
-        } else {
           const key =
-            pageUrl
-              .split("#")[0];
+            normalized;
 
           if (
-            !seenOfficialUrls.has(
-              key
-            )
+            !seen.has(key)
           ) {
-            seenOfficialUrls.add(
-              key
-            );
+            seen.add(key);
 
             candidates.push({
               type,
@@ -1421,7 +1507,7 @@ async function discoverLIC(source) {
                 `Official LIC ${type} update: ${title}`,
 
               official_url:
-                pageUrl,
+                normalized,
 
               notification_url:
                 notificationUrl,
@@ -1430,7 +1516,7 @@ async function discoverLIC(source) {
                 applyUrl,
 
               source_url:
-                pageUrl,
+                normalized,
 
               source_name:
                 source.name
@@ -1441,17 +1527,16 @@ async function discoverLIC(source) {
     }
 
     /*
-     * Follow useful official links.
-     * This allows future recruitment /
-     * scholarship pages to be discovered
-     * without hard-coding their names or years.
+     * Follow only relevant official links.
+     * No year/name is hard-coded here.
      */
     if (
-      depth <
-      2
+      depth < 3 &&
+      candidates.length <
+        CANDIDATE_LIMIT
     ) {
       const nextPages =
-        pageLinks
+        links
           .filter(link =>
             link?.url
           )
@@ -1468,18 +1553,24 @@ async function discoverLIC(source) {
             )
           )
           .filter(link =>
-            isRelevantLIC(
-              `${link.text} ${link.url}`
+            !sameUrl(
+              link.url,
+              normalized
+            )
+          )
+          .filter(link =>
+            relevant(
+              textOf(link)
             )
           )
           .sort(
             (a, b) =>
               scoreText(
-                `${b.text} ${b.url}`,
+                textOf(b),
                 SECTION_WORDS
               ) -
               scoreText(
-                `${a.text} ${a.url}`,
+                textOf(a),
                 SECTION_WORDS
               )
           );
@@ -1488,8 +1579,8 @@ async function discoverLIC(source) {
         const link of nextPages
       ) {
         if (
-          visitedPages.size >=
-          MAX_DISCOVERY_PAGES
+          visited.size >=
+          MAX_PAGES
         ) {
           break;
         }
@@ -1501,7 +1592,7 @@ async function discoverLIC(source) {
           break;
         }
 
-        await inspectPage(
+        await inspect(
           link.url,
           depth + 1
         );
@@ -1510,14 +1601,13 @@ async function discoverLIC(source) {
   }
 
   /*
-   * Start discovery from the two
-   * stable LIC official sections.
+   * Start from stable LIC sections.
+   * Future schemes/recruitments can be
+   * discovered from these pages without
+   * changing this code every year.
    */
   for (
-    const seedUrl of seedPages.slice(
-      0,
-      MAX_SEED_PAGES
-    )
+    const seed of seedPages
   ) {
     if (
       candidates.length >=
@@ -1526,8 +1616,8 @@ async function discoverLIC(source) {
       break;
     }
 
-    await inspectPage(
-      seedUrl,
+    await inspect(
+      seed,
       0
     );
   }
@@ -1537,7 +1627,6 @@ async function discoverLIC(source) {
     CANDIDATE_LIMIT
   );
               }
-          
 /* -------------------------------- */
 /* Adapter registry                  */
 /* -------------------------------- */
