@@ -1,29 +1,215 @@
 import adapters from "./sources.js";
-import { verifyCandidate, sha256Hex, slugify } from "./verification.js";
+import {
+  verifyCandidate,
+  sha256Hex,
+  slugify
+} from "./verification.js";
 
 const SOURCES_PER_RUN = 4;
 const MAX_CANDIDATES_PER_SOURCE = 8;
 
-export async function runMonitor(env) {
-  const started = new Date().toISOString();
+/*
+ * ----------------------------------------
+ * Expiry / Archive helpers
+ * ----------------------------------------
+ */
 
-  const sourcesResult = await env.DB.prepare(`
-    SELECT *
-    FROM sources
-    WHERE enabled=1
-    ORDER BY
-      CASE
-        WHEN last_checked_at IS NULL THEN 0
-        ELSE 1
-      END ASC,
-      last_checked_at ASC,
-      priority ASC
-    LIMIT ?
-  `)
-    .bind(SOURCES_PER_RUN)
+function validDate(value) {
+  if (!value) return null;
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date;
+}
+
+/*
+ * A published item is archived when:
+ *
+ * 1. It has a last_date and 30 days have passed
+ *    after that last date.
+ *
+ * 2. It has no last_date but is older than 1 year.
+ *
+ * 3. Any published item is older than 1 year.
+ *
+ * Database record is NEVER deleted.
+ */
+function getArchiveReason(item, now = new Date()) {
+  /*
+   * ----------------------------------------
+   * Rule 1:
+   * Last date + 30 days
+   * ----------------------------------------
+   */
+  const lastDate = validDate(item.last_date);
+
+  if (lastDate) {
+    const expiryDate =
+      new Date(lastDate.getTime());
+
+    expiryDate.setUTCDate(
+      expiryDate.getUTCDate() + 30
+    );
+
+    if (now >= expiryDate) {
+      return (
+        "Application last date passed more than 30 days ago"
+      );
+    }
+  }
+
+  /*
+   * ----------------------------------------
+   * Rule 2:
+   * Maximum one year lifetime
+   * ----------------------------------------
+   */
+  const baseDate =
+    validDate(item.date_posted) ||
+    validDate(item.created_at);
+
+  if (baseDate) {
+    const oneYearLater =
+      new Date(baseDate.getTime());
+
+    oneYearLater.setUTCFullYear(
+      oneYearLater.getUTCFullYear() + 1
+    );
+
+    if (now >= oneYearLater) {
+      return "Item is older than one year";
+    }
+  }
+
+  return null;
+}
+
+/*
+ * ----------------------------------------
+ * Archive old published items
+ * ----------------------------------------
+ */
+async function archiveExpiredItems(env) {
+  const now = new Date();
+
+  const result = await env.DB
+    .prepare(`
+      SELECT
+        id,
+        type,
+        title,
+        last_date,
+        date_posted,
+        created_at
+      FROM items
+      WHERE status = 'published'
+    `)
     .all();
 
-  const sources = sourcesResult.results || [];
+  const items = result.results || [];
+
+  let archived = 0;
+
+  for (const item of items) {
+    try {
+      const reason =
+        getArchiveReason(item, now);
+
+      if (!reason) {
+        continue;
+      }
+
+      await env.DB
+        .prepare(`
+          UPDATE items
+          SET
+            status = 'archived',
+            archived_at = ?,
+            archive_reason = ?,
+            updated_at = ?
+          WHERE id = ?
+            AND status = 'published'
+        `)
+        .bind(
+          now.toISOString(),
+          reason,
+          now.toISOString(),
+          item.id
+        )
+        .run();
+
+      archived++;
+
+    } catch (error) {
+      console.error(
+        "Archive error:",
+        item?.id,
+        error
+      );
+    }
+  }
+
+  return archived;
+}
+
+/*
+ * ----------------------------------------
+ * Monitor
+ * ----------------------------------------
+ */
+
+export async function runMonitor(env) {
+  const started =
+    new Date().toISOString();
+
+  /*
+   * First archive old items.
+   *
+   * This happens before discovery so old
+   * cards disappear from the public site
+   * even if no new source is discovered.
+   */
+  let archived = 0;
+
+  try {
+    archived =
+      await archiveExpiredItems(env);
+  } catch (archiveError) {
+    console.error(
+      "Archive system error:",
+      archiveError
+    );
+  }
+
+  /*
+   * ----------------------------------------
+   * Select next sources
+   * ----------------------------------------
+   */
+
+  const sourcesResult =
+    await env.DB.prepare(`
+      SELECT *
+      FROM sources
+      WHERE enabled=1
+      ORDER BY
+        CASE
+          WHEN last_checked_at IS NULL THEN 0
+          ELSE 1
+        END ASC,
+        last_checked_at ASC,
+        priority ASC
+      LIMIT ?
+    `)
+      .bind(SOURCES_PER_RUN)
+      .all();
+
+  const sources =
+    sourcesResult.results || [];
 
   let discovered = 0;
   let published = 0;
@@ -33,6 +219,12 @@ export async function runMonitor(env) {
 
   const details = [];
 
+  /*
+   * ----------------------------------------
+   * Process sources
+   * ----------------------------------------
+   */
+
   for (const source of sources) {
     try {
       const adapter =
@@ -41,49 +233,86 @@ export async function runMonitor(env) {
 
       if (typeof adapter !== "function") {
         throw new Error(
-          `Adapter not found: ${source.adapter || "generic"}`
+          `Adapter not found: ${
+            source.adapter || "generic"
+          }`
         );
       }
 
-      let candidates = await adapter(source);
+      let candidates =
+        await adapter(source);
 
       if (!Array.isArray(candidates)) {
         candidates = [];
       }
 
-      candidates = candidates.slice(0, MAX_CANDIDATES_PER_SOURCE);
+      candidates =
+        candidates.slice(
+          0,
+          MAX_CANDIDATES_PER_SOURCE
+        );
 
-      discovered += candidates.length;
+      discovered +=
+        candidates.length;
+
+      /*
+       * ----------------------------------------
+       * Process candidates
+       * ----------------------------------------
+       */
 
       for (const candidate of candidates) {
         try {
-          const verification = verifyCandidate(candidate, source);
+          const verification =
+            verifyCandidate(
+              candidate,
+              source
+            );
 
-          const hash = await sha256Hex(
-            JSON.stringify(candidate)
-          );
+          const hash =
+            await sha256Hex(
+              JSON.stringify(candidate)
+            );
 
           /*
-           * IMPORTANT:
-           * slug is generated BEFORE INSERT.
-           * items.slug is NOT NULL in the database.
+           * slug generated BEFORE INSERT
            */
-          const baseSlug = slugify(
-            candidate.title || "government-update"
-          );
+          const baseSlug =
+            slugify(
+              candidate.title ||
+              "government-update"
+            );
 
           const slug =
             `${baseSlug}-${hash.slice(0, 10)}`;
 
-          const existing = await env.DB
-            .prepare(`
-              SELECT id
-              FROM items
-              WHERE source_url=?
-              LIMIT 1
-            `)
-            .bind(candidate.source_url || null)
-            .first();
+          /*
+           * Find existing item by source URL.
+           */
+          const existing =
+            await env.DB
+              .prepare(`
+                SELECT
+                  id,
+                  status,
+                  last_date,
+                  date_posted,
+                  created_at
+                FROM items
+                WHERE source_url=?
+                LIMIT 1
+              `)
+              .bind(
+                candidate.source_url ||
+                null
+              )
+              .first();
+
+          /*
+           * ----------------------------------------
+           * Verification failed
+           * ----------------------------------------
+           */
 
           if (!verification.publish) {
             blocked++;
@@ -115,47 +344,172 @@ export async function runMonitor(env) {
             continue;
           }
 
-          const now = new Date().toISOString();
+          /*
+           * ----------------------------------------
+           * Expiry check BEFORE publishing
+           *
+           * This is important.
+           *
+           * It prevents an old job from being
+           * automatically re-published after the
+           * adapter discovers it again.
+           * ----------------------------------------
+           */
+
+          const candidateForExpiry = {
+            last_date:
+              candidate.last_date ||
+              null,
+
+            date_posted:
+              candidate.date_posted ||
+              null,
+
+            created_at:
+              existing?.created_at ||
+              new Date().toISOString()
+          };
+
+          const archiveReason =
+            getArchiveReason(
+              candidateForExpiry,
+              new Date()
+            );
+
+          if (archiveReason) {
+            /*
+             * If the item already exists,
+             * keep it archived.
+             */
+            if (existing) {
+              await env.DB
+                .prepare(`
+                  UPDATE items
+                  SET
+                    status = 'archived',
+                    archived_at = COALESCE(
+                      archived_at,
+                      ?
+                    ),
+                    archive_reason = ?,
+                    updated_at = ?
+                  WHERE id = ?
+                `)
+                .bind(
+                  new Date().toISOString(),
+                  archiveReason,
+                  new Date().toISOString(),
+                  existing.id
+                )
+                .run();
+            }
+
+            /*
+             * Do not publish stale candidates.
+             */
+            continue;
+          }
+
+          const now =
+            new Date().toISOString();
 
           /*
-           * Keep every database value explicit.
-           * slug is included here, BEFORE the other fields.
+           * ----------------------------------------
+           * Explicit database values
+           * ----------------------------------------
            */
+
           const values = [
-            candidate.type || "job",
+            candidate.type ||
+              "job",
+
             slug,
-            candidate.title || "Untitled",
-            candidate.organization || source.name,
-            candidate.category || null,
-            candidate.location || null,
-            candidate.description || null,
-            candidate.qualification || null,
-            candidate.vacancies || null,
-            candidate.age_limit || null,
-            candidate.fee || null,
-            candidate.selection_process || null,
-            candidate.salary || null,
-            candidate.application_start || null,
-            candidate.last_date || null,
-            candidate.exam_date || null,
-            candidate.date_posted || now.slice(0, 10),
-            candidate.official_url || null,
-            candidate.apply_url || null,
-            candidate.notification_url || null,
-            candidate.source_url || null,
+
+            candidate.title ||
+              "Untitled",
+
+            candidate.organization ||
+              source.name,
+
+            candidate.category ||
+              null,
+
+            candidate.location ||
+              null,
+
+            candidate.description ||
+              null,
+
+            candidate.qualification ||
+              null,
+
+            candidate.vacancies ||
+              null,
+
+            candidate.age_limit ||
+              null,
+
+            candidate.fee ||
+              null,
+
+            candidate.selection_process ||
+              null,
+
+            candidate.salary ||
+              null,
+
+            candidate.application_start ||
+              null,
+
+            candidate.last_date ||
+              null,
+
+            candidate.exam_date ||
+              null,
+
+            candidate.date_posted ||
+              now.slice(0, 10),
+
+            candidate.official_url ||
+              null,
+
+            candidate.apply_url ||
+              null,
+
+            candidate.notification_url ||
+              null,
+
+            candidate.source_url ||
+              null,
+
             source.name,
+
             source.id,
+
             hash,
+
             "published",
+
             "verified",
+
             verification.score,
+
             JSON.stringify(
               verification.evidence
             ),
+
             now,
+
             now,
+
             now
           ];
+
+          /*
+           * ----------------------------------------
+           * Existing item
+           * ----------------------------------------
+           */
 
           if (existing) {
             await env.DB
@@ -191,17 +545,29 @@ export async function runMonitor(env) {
                   evidence_json=?,
                   last_verified_at=?,
                   last_seen_at=?,
-                  published_at=?
+                  published_at=?,
+                  archived_at=NULL,
+                  archive_reason=NULL,
+                  updated_at=?
                 WHERE id=?
               `)
               .bind(
                 ...values,
+                now,
                 existing.id
               )
               .run();
 
             updated++;
+
           } else {
+
+            /*
+             * ----------------------------------------
+             * New item
+             * ----------------------------------------
+             */
+
             await env.DB
               .prepare(`
                 INSERT INTO items(
@@ -235,7 +601,9 @@ export async function runMonitor(env) {
                   evidence_json,
                   last_verified_at,
                   last_seen_at,
-                  published_at
+                  published_at,
+                  archived_at,
+                  archive_reason
                 )
                 VALUES(
                   ?1,
@@ -268,7 +636,9 @@ export async function runMonitor(env) {
                   ?28,
                   ?29,
                   ?30,
-                  ?31
+                  ?31,
+                  NULL,
+                  NULL
                 )
               `)
               .bind(...values)
@@ -281,17 +651,27 @@ export async function runMonitor(env) {
           errors++;
 
           details.push({
-            source: source.name,
+            source:
+              source.name,
+
             candidate:
               candidate?.title ||
               "Unknown candidate",
-            error: String(
-              candidateError?.message ||
-              candidateError
-            )
+
+            error:
+              String(
+                candidateError?.message ||
+                candidateError
+              )
           });
         }
       }
+
+      /*
+       * ----------------------------------------
+       * Source success
+       * ----------------------------------------
+       */
 
       const checkedAt =
         new Date().toISOString();
@@ -313,12 +693,14 @@ export async function runMonitor(env) {
         .run();
 
     } catch (sourceError) {
+
       errors++;
 
-      const errorMessage = String(
-        sourceError?.message ||
-        sourceError
-      );
+      const errorMessage =
+        String(
+          sourceError?.message ||
+          sourceError
+        );
 
       await env.DB
         .prepare(`
@@ -336,11 +718,20 @@ export async function runMonitor(env) {
         .run();
 
       details.push({
-        source: source.name,
-        error: errorMessage
+        source:
+          source.name,
+
+        error:
+          errorMessage
       });
     }
   }
+
+  /*
+   * ----------------------------------------
+   * Monitor run log
+   * ----------------------------------------
+   */
 
   const finished =
     new Date().toISOString();
@@ -369,18 +760,35 @@ export async function runMonitor(env) {
       updated,
       blocked,
       errors,
-      JSON.stringify(details)
+      JSON.stringify({
+        archived,
+        details
+      })
     )
     .run();
+
+  /*
+   * ----------------------------------------
+   * Return monitor result
+   * ----------------------------------------
+   */
 
   return {
     started,
     finished,
-    sources: sources.length,
+    sources:
+      sources.length,
+
     discovered,
+
     published,
+
     updated,
+
     blocked,
-    errors
+
+    errors,
+
+    archived
   };
-}
+        }
