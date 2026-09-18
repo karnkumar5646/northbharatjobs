@@ -72,10 +72,18 @@ export default {
   });
     }
 
-    if (path === "/api/monitor") {
-      const key = request.headers.get("x-monitor-key");
-      if (!env.MONITOR_KEY || key !== env.MONITOR_KEY) return json({error:"Unauthorized"},401);
-      return json(await runMonitor(env));
+    if (path === "/api/admin/discover") {
+  const sourceName = url.searchParams.get("source");
+
+  if (!sourceName) {
+    return json({error:"Missing source parameter"},400);
+  }
+
+  return json({
+    ok: true,
+    source: sourceName,
+    message: "Discovery endpoint is connected"
+  });
     }
 
     if (path === "/api/sections") {
