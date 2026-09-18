@@ -45,20 +45,18 @@ function getArchiveReason(item, now = new Date()) {
    * Last date + 30 days
    * ----------------------------------------
    */
+
   const lastDate = validDate(item.last_date);
 
   if (lastDate) {
-    const expiryDate =
-      new Date(lastDate.getTime());
+    const expiryDate = new Date(lastDate.getTime());
 
     expiryDate.setUTCDate(
       expiryDate.getUTCDate() + 30
     );
 
     if (now >= expiryDate) {
-      return (
-        "Application last date passed more than 30 days ago"
-      );
+      return "Application last date passed more than 30 days ago";
     }
   }
 
@@ -68,13 +66,13 @@ function getArchiveReason(item, now = new Date()) {
    * Maximum one year lifetime
    * ----------------------------------------
    */
+
   const baseDate =
     validDate(item.date_posted) ||
     validDate(item.created_at);
 
   if (baseDate) {
-    const oneYearLater =
-      new Date(baseDate.getTime());
+    const oneYearLater = new Date(baseDate.getTime());
 
     oneYearLater.setUTCFullYear(
       oneYearLater.getUTCFullYear() + 1
@@ -93,6 +91,7 @@ function getArchiveReason(item, now = new Date()) {
  * Archive old published items
  * ----------------------------------------
  */
+
 async function archiveExpiredItems(env) {
   const now = new Date();
 
@@ -159,20 +158,26 @@ async function archiveExpiredItems(env) {
 /*
  * ----------------------------------------
  * Monitor
+ *
+ * requestedSource:
+ *   null  -> normal automatic monitor
+ *   "LIC" -> run only LIC
  * ----------------------------------------
  */
 
-export async function runMonitor(env) {
+export async function runMonitor(
+  env,
+  requestedSource = null
+) {
   const started =
     new Date().toISOString();
 
   /*
-   * First archive old items.
-   *
-   * This happens before discovery so old
-   * cards disappear from the public site
-   * even if no new source is discovered.
+   * ----------------------------------------
+   * Archive old published items first
+   * ----------------------------------------
    */
+
   let archived = 0;
 
   try {
@@ -187,29 +192,91 @@ export async function runMonitor(env) {
 
   /*
    * ----------------------------------------
-   * Select next sources
+   * Select sources
+   * ----------------------------------------
+   *
+   * Normal monitor:
+   *   Select next SOURCES_PER_RUN sources.
+   *
+   * Manual source:
+   *   Select only requested source.
+   *
+   * Matching works with either:
+   *   sources.name
+   *   sources.adapter
+   *
+   * Example:
+   *   ?source=LIC
+   *   matches:
+   *   name = LIC
+   *   adapter = lic
    * ----------------------------------------
    */
 
-  const sourcesResult =
-    await env.DB.prepare(`
-      SELECT *
-      FROM sources
-      WHERE enabled=1
-      ORDER BY
-        CASE
-          WHEN last_checked_at IS NULL THEN 0
-          ELSE 1
-        END ASC,
-        last_checked_at ASC,
-        priority ASC
-      LIMIT ?
-    `)
-      .bind(SOURCES_PER_RUN)
-      .all();
+  let sources = [];
 
-  const sources =
-    sourcesResult.results || [];
+  if (requestedSource) {
+    const sourceName =
+      String(requestedSource).trim();
+
+    const sourceResult =
+      await env.DB
+        .prepare(`
+          SELECT *
+          FROM sources
+          WHERE enabled = 1
+            AND (
+              name = ? COLLATE NOCASE
+              OR adapter = ? COLLATE NOCASE
+            )
+          LIMIT 1
+        `)
+        .bind(
+          sourceName,
+          sourceName
+        )
+        .all();
+
+    sources =
+      sourceResult.results || [];
+
+    /*
+     * If a manually requested source does
+     * not exist, return a clear error.
+     */
+    if (sources.length === 0) {
+      throw new Error(
+        `Enabled source not found: ${sourceName}`
+      );
+    }
+
+  } else {
+
+    /*
+     * Normal automatic monitor.
+     */
+
+    const sourcesResult =
+      await env.DB
+        .prepare(`
+          SELECT *
+          FROM sources
+          WHERE enabled = 1
+          ORDER BY
+            CASE
+              WHEN last_checked_at IS NULL THEN 0
+              ELSE 1
+            END ASC,
+            last_checked_at ASC,
+            priority ASC
+          LIMIT ?
+        `)
+        .bind(SOURCES_PER_RUN)
+        .all();
+
+    sources =
+      sourcesResult.results || [];
+  }
 
   let discovered = 0;
   let published = 0;
@@ -227,6 +294,13 @@ export async function runMonitor(env) {
 
   for (const source of sources) {
     try {
+
+      /*
+       * ----------------------------------------
+       * Find adapter
+       * ----------------------------------------
+       */
+
       const adapter =
         adapters?.[source.adapter] ||
         adapters?.generic;
@@ -238,6 +312,12 @@ export async function runMonitor(env) {
           }`
         );
       }
+
+      /*
+       * ----------------------------------------
+       * Run source discovery
+       * ----------------------------------------
+       */
 
       let candidates =
         await adapter(source);
@@ -263,11 +343,24 @@ export async function runMonitor(env) {
 
       for (const candidate of candidates) {
         try {
+
+          /*
+           * ----------------------------------------
+           * Verification
+           * ----------------------------------------
+           */
+
           const verification =
             verifyCandidate(
               candidate,
               source
             );
+
+          /*
+           * ----------------------------------------
+           * Source hash
+           * ----------------------------------------
+           */
 
           const hash =
             await sha256Hex(
@@ -275,8 +368,11 @@ export async function runMonitor(env) {
             );
 
           /*
-           * slug generated BEFORE INSERT
+           * ----------------------------------------
+           * Slug
+           * ----------------------------------------
            */
+
           const baseSlug =
             slugify(
               candidate.title ||
@@ -287,8 +383,15 @@ export async function runMonitor(env) {
             `${baseSlug}-${hash.slice(0, 10)}`;
 
           /*
-           * Find existing item by source URL.
+           * ----------------------------------------
+           * Find existing item
+           * ----------------------------------------
+           *
+           * Source URL is used as the stable
+           * identity of an already discovered item.
+           * ----------------------------------------
            */
+
           const existing =
             await env.DB
               .prepare(`
@@ -299,7 +402,7 @@ export async function runMonitor(env) {
                   date_posted,
                   created_at
                 FROM items
-                WHERE source_url=?
+                WHERE source_url = ?
                 LIMIT 1
               `)
               .bind(
@@ -347,12 +450,6 @@ export async function runMonitor(env) {
           /*
            * ----------------------------------------
            * Expiry check BEFORE publishing
-           *
-           * This is important.
-           *
-           * It prevents an old job from being
-           * automatically re-published after the
-           * adapter discovers it again.
            * ----------------------------------------
            */
 
@@ -377,11 +474,16 @@ export async function runMonitor(env) {
             );
 
           if (archiveReason) {
+
             /*
-             * If the item already exists,
+             * Existing item:
              * keep it archived.
              */
+
             if (existing) {
+              const archiveNow =
+                new Date().toISOString();
+
               await env.DB
                 .prepare(`
                   UPDATE items
@@ -396,9 +498,9 @@ export async function runMonitor(env) {
                   WHERE id = ?
                 `)
                 .bind(
-                  new Date().toISOString(),
+                  archiveNow,
                   archiveReason,
-                  new Date().toISOString(),
+                  archiveNow,
                   existing.id
                 )
                 .run();
@@ -407,6 +509,7 @@ export async function runMonitor(env) {
             /*
              * Do not publish stale candidates.
              */
+
             continue;
           }
 
@@ -415,7 +518,42 @@ export async function runMonitor(env) {
 
           /*
            * ----------------------------------------
-           * Explicit database values
+           * Database values
+           * ----------------------------------------
+           *
+           * These 31 values correspond exactly to:
+           *
+           * 1  type
+           * 2  slug
+           * 3  title
+           * 4  organization
+           * 5  category
+           * 6  location
+           * 7  description
+           * 8  qualification
+           * 9  vacancies
+           * 10 age_limit
+           * 11 fee
+           * 12 selection_process
+           * 13 salary
+           * 14 application_start
+           * 15 last_date
+           * 16 exam_date
+           * 17 date_posted
+           * 18 official_url
+           * 19 apply_url
+           * 20 notification_url
+           * 21 source_url
+           * 22 source_name
+           * 23 source_id
+           * 24 source_hash
+           * 25 status
+           * 26 verification_status
+           * 27 confidence_score
+           * 28 evidence_json
+           * 29 last_verified_at
+           * 30 last_seen_at
+           * 31 published_at
            * ----------------------------------------
            */
 
@@ -512,6 +650,7 @@ export async function runMonitor(env) {
            */
 
           if (existing) {
+
             await env.DB
               .prepare(`
                 UPDATE items SET
@@ -641,13 +780,16 @@ export async function runMonitor(env) {
                   NULL
                 )
               `)
-              .bind(...values)
+              .bind(
+                ...values
+              )
               .run();
 
             published++;
           }
 
         } catch (candidateError) {
+
           errors++;
 
           details.push({
@@ -701,6 +843,12 @@ export async function runMonitor(env) {
           sourceError?.message ||
           sourceError
         );
+
+      /*
+       * ----------------------------------------
+       * Source error
+       * ----------------------------------------
+       */
 
       await env.DB
         .prepare(`
@@ -762,6 +910,8 @@ export async function runMonitor(env) {
       errors,
       JSON.stringify({
         archived,
+        requested_source:
+          requestedSource || null,
         details
       })
     )
@@ -774,8 +924,15 @@ export async function runMonitor(env) {
    */
 
   return {
+    ok: true,
+
     started,
+
     finished,
+
+    requested_source:
+      requestedSource || null,
+
     sources:
       sources.length,
 
@@ -789,6 +946,8 @@ export async function runMonitor(env) {
 
     errors,
 
-    archived
+    archived,
+
+    details
   };
-        }
+      }
