@@ -1092,16 +1092,15 @@ async function discoverFromSource(
 
 async function discoverLIC(source) {
   const seedPages = [
-    "https://licindia.in/en/web/guest/careers",
-    "https://licindia.in/en/web/guest/golden-jubilee-foundation"
+    "https://licindia.in/en/web/guest/careers"
   ];
 
   const candidates = [];
   const visited = new Set();
   const seen = new Set();
 
-  const MAX_PAGES = 30;
-  const MAX_LINKS = 250;
+  const MAX_PAGES = 40;
+  const MAX_LINKS = 300;
   const MAX_DEPTH = 3;
 
   function isOfficialLICUrl(url) {
@@ -1116,14 +1115,111 @@ async function discoverLIC(source) {
     );
   }
 
+  function normalizeLICUrl(url) {
+    if (!url) return "";
+
+    try {
+      const u = new URL(url);
+
+      u.hash = "";
+
+      /*
+       * Remove tracking/query parameters.
+       * Keep functional career parameters.
+       */
+      const removeParams = [
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "fbclid",
+        "gclid"
+      ];
+
+      for (const key of removeParams) {
+        u.searchParams.delete(key);
+      }
+
+      /*
+       * Normalize hostname.
+       */
+      u.hostname =
+        u.hostname.toLowerCase();
+
+      /*
+       * Normalize trailing slash.
+       */
+      u.pathname =
+        u.pathname.replace(
+          /\/+$/,
+          ""
+        ) || "/";
+
+      return u.toString();
+    } catch {
+      return String(url)
+        .split("#")[0]
+        .replace(/\/+$/, "");
+    }
+  }
+
   function textOf(link) {
     return clean(
       `${link?.text || ""} ${link?.url || ""}`
     );
   }
 
-  function relevant(text) {
-    return /recruit|recruitment|career|careers|vacancy|vacancies|employment|job|jobs|officer|assistant|engineer|aao|ado|apprentice|scholarship|fellowship|notification|advertisement|notice|result|admit card|hall ticket|call letter|answer key|corrigendum|shortlist|scorecard|exam|application|registration|selection|engagement|syllabus|admission/i.test(
+  /*
+   * Generic LIC website pages that
+   * must NEVER become job items.
+   */
+  function isBlockedGeneralPage(text, url = "") {
+    const value =
+      clean(
+        `${text} ${url}`
+      ).toLowerCase();
+
+    return /customer education|customer-education|policy document|premium receipt|claim form|claim settlement|branch locator|privacy policy|terms and conditions|annual report|financial statement|investor relations|mylic|agent portal|login|calculator|contact us|about us|home page|homepage|golden jubilee foundation|community development/i.test(
+      value
+    );
+  }
+
+  /*
+   * Strong recruitment signals.
+   */
+  function hasRecruitmentSignal(text) {
+    return /recruitment|employment notice|vacancy|vacancies|career opportunity|careers|job description|online application|engagement of|appointment of|selection of|assistant engineer|assistant administrative officer|aao|ado|apprentice development officer|officer|assistant|engineer|actuary|chief financial officer|cfo|direct recruitment/i.test(
+      clean(text)
+    );
+  }
+
+  function hasScholarshipSignal(text) {
+    return /scholarship|fellowship/i.test(
+      clean(text)
+    );
+  }
+
+  function hasAdmitCardSignal(text) {
+    return /admit card|hall ticket|call letter/i.test(
+      clean(text)
+    );
+  }
+
+  function hasResultSignal(text) {
+    return /\bresult\b|results|scorecard|score card|merit list|selection list|shortlisted candidates|shortlist/i.test(
+      clean(text)
+    );
+  }
+
+  function hasAnswerKeySignal(text) {
+    return /answer key|provisional key|final key/i.test(
+      clean(text)
+    );
+  }
+
+  function hasSyllabusSignal(text) {
+    return /syllabus|exam pattern|scheme of examination/i.test(
       clean(text)
     );
   }
@@ -1132,13 +1228,20 @@ async function discoverLIC(source) {
     const value =
       clean(text).toLowerCase();
 
+    if (
+      isBlockedGeneralPage(
+        value
+      )
+    ) {
+      return null;
+    }
+
     /*
-     * IMPORTANT:
-     * "education" or "student" alone
-     * must NOT make a page a scholarship.
+     * Explicit scholarship wins only
+     * when scholarship is actually present.
      */
     if (
-      /scholarship|fellowship/.test(
+      hasScholarshipSignal(
         value
       )
     ) {
@@ -1146,7 +1249,7 @@ async function discoverLIC(source) {
     }
 
     if (
-      /admit card|hall ticket|call letter/.test(
+      hasAdmitCardSignal(
         value
       )
     ) {
@@ -1154,7 +1257,7 @@ async function discoverLIC(source) {
     }
 
     if (
-      /answer key|provisional key|final key/.test(
+      hasAnswerKeySignal(
         value
       )
     ) {
@@ -1162,7 +1265,7 @@ async function discoverLIC(source) {
     }
 
     if (
-      /\bresult\b|results|scorecard|score card|merit list|selection list|final result/.test(
+      hasResultSignal(
         value
       )
     ) {
@@ -1170,15 +1273,19 @@ async function discoverLIC(source) {
     }
 
     if (
-      /syllabus|exam pattern|scheme of examination/.test(
+      hasSyllabusSignal(
         value
       )
     ) {
       return "syllabus";
     }
 
+    /*
+     * Recruitment comes before generic
+     * notification/update classification.
+     */
     if (
-      /recruitment|vacancy|vacancies|employment|career|careers|job|jobs|officer|assistant|engineer|aao|ado|apprentice|engagement|direct recruitment|selection/.test(
+      hasRecruitmentSignal(
         value
       )
     ) {
@@ -1194,7 +1301,7 @@ async function discoverLIC(source) {
     }
 
     if (
-      /notification|advertisement|notice|corrigendum|exam date|schedule|latest update/.test(
+      /notification|advertisement|notice|corrigendum|schedule|latest update/.test(
         value
       )
     ) {
@@ -1209,22 +1316,52 @@ async function discoverLIC(source) {
     title
   ) {
     const value =
-      `${url} ${title}`.toLowerCase();
+      `${url} ${title}`
+        .toLowerCase();
 
     return (
-      /\/careers\/?$/.test(
-        url.toLowerCase()
+      /\/careers(?:\/)?(?:\?.*)?$/i.test(
+        url
       ) ||
       /^careers?$/i.test(
         clean(title)
       ) ||
-      /lic careers/.test(value)
+      /lic careers/.test(
+        value
+      )
     );
   }
 
-  function isBadPDF(text) {
-    return /certificate of registration|registration certificate|premium receipt|policy document|claim form|claim settlement|customer education|branch locator|annual report|financial statement|privacy policy|terms and conditions/i.test(
-      text
+  function isRecruitmentDetailPage(
+    url,
+    title,
+    links,
+    pageText = ""
+  ) {
+    const combined =
+      clean(
+        `${url} ${title} ${pageText} ${links
+          .map(textOf)
+          .join(" ")}`
+      );
+
+    if (
+      isBlockedGeneralPage(
+        combined,
+        url
+      )
+    ) {
+      return false;
+    }
+
+    return (
+      hasRecruitmentSignal(
+        combined
+      ) &&
+      !isCareerIndexPage(
+        url,
+        title
+      )
     );
   }
 
@@ -1234,8 +1371,9 @@ async function discoverLIC(source) {
         /\b(20\d{2})\b/g
       )
     ]
-      .map(match =>
-        Number(match[1])
+      .map(
+        match =>
+          Number(match[1])
       )
       .filter(
         year =>
@@ -1248,14 +1386,12 @@ async function discoverLIC(source) {
     link,
     context = ""
   ) {
-    const text =
-      clean(
-        `${link?.text || ""} ${link?.url || ""} ${context}`
-      ).toLowerCase();
+    const url =
+      link?.url || "";
 
     if (
       !isOfficialLICUrl(
-        link?.url
+        url
       )
     ) {
       return -Infinity;
@@ -1263,39 +1399,41 @@ async function discoverLIC(source) {
 
     if (
       !isPdf(
-        link.url,
-        link.text
+        url,
+        link?.text
       )
     ) {
       return -Infinity;
     }
 
+    const text =
+      clean(
+        `${link?.text || ""} ${url} ${context}`
+      ).toLowerCase();
+
+    /*
+     * Reject unrelated LIC PDFs.
+     */
     if (
-      isBadPDF(text)
+      /certificate of registration|registration certificate|premium receipt|policy document|claim form|claim settlement|customer education|branch locator|annual report|financial statement|privacy policy|terms and conditions/i.test(
+        text
+      )
     ) {
-      return -500;
+      return -Infinity;
     }
 
     let score = 0;
 
     if (
-      /notification|advertisement|detailed advertisement/.test(
+      /employment notice|employment notification|recruitment notification|recruitment|advertisement|detailed advertisement/.test(
         text
       )
     ) {
-      score += 150;
+      score += 180;
     }
 
     if (
-      /recruitment|employment|vacancy|vacancies/.test(
-        text
-      )
-    ) {
-      score += 100;
-    }
-
-    if (
-      /scholarship|fellowship/.test(
+      /vacancy|vacancies|selection|appointment|engagement|online application/.test(
         text
       )
     ) {
@@ -1303,21 +1441,23 @@ async function discoverLIC(source) {
     }
 
     if (
-      /scheme/.test(text)
-    ) {
-      score += 65;
-    }
-
-    if (
-      /instructions|guidelines/.test(
+      /assistant engineer|aao|ado|apprentice|officer|assistant|engineer|cfo/.test(
         text
       )
     ) {
-      score += 35;
+      score += 90;
     }
 
     if (
-      /notice|corrigendum/.test(
+      /notification|notice/.test(
+        text
+      )
+    ) {
+      score += 70;
+    }
+
+    if (
+      /corrigendum/.test(
         text
       )
     ) {
@@ -1329,7 +1469,7 @@ async function discoverLIC(source) {
         text
       )
     ) {
-      score += 80;
+      score += 50;
     }
 
     if (
@@ -1337,24 +1477,19 @@ async function discoverLIC(source) {
         text
       )
     ) {
-      score += 80;
-    }
-
-    if (
-      /syllabus/.test(
-        text
-      )
-    ) {
-      score += 70;
+      score += 50;
     }
 
     const years =
       extractYears(text);
 
-    if (years.length) {
+    if (
+      years.length
+    ) {
       score +=
-        Math.max(...years) -
-        2020;
+        Math.max(
+          ...years
+        ) - 2020;
     }
 
     return score;
@@ -1366,17 +1501,19 @@ async function discoverLIC(source) {
   ) {
     const ranked =
       links
-        .map(link => ({
-          link,
-          score:
-            pdfScore(
-              link,
-              context
-            )
-        }))
+        .map(
+          link => ({
+            link,
+            score:
+              pdfScore(
+                link,
+                context
+              )
+          })
+        )
         .filter(
           item =>
-            item.score >= 50
+            item.score >= 100
         )
         .sort(
           (a, b) =>
@@ -1385,7 +1522,11 @@ async function discoverLIC(source) {
         );
 
     return ranked.length
-      ? ranked[0].link.url
+      ? normalizeLICUrl(
+          ranked[0]
+            .link
+            .url
+        )
       : null;
   }
 
@@ -1393,16 +1534,17 @@ async function discoverLIC(source) {
     link,
     context = ""
   ) {
-    const text =
-      clean(
-        `${link?.text || ""} ${link?.url || ""} ${context}`
-      ).toLowerCase();
+    const url =
+      link?.url || "";
+
+    if (!url) {
+      return -Infinity;
+    }
 
     if (
-      !link?.url ||
       isPdf(
-        link.url,
-        link.text
+        url,
+        link?.text
       )
     ) {
       return -Infinity;
@@ -1410,36 +1552,42 @@ async function discoverLIC(source) {
 
     if (
       !isOfficialLICUrl(
-        link.url
+        url
       )
     ) {
       return -Infinity;
     }
 
+    const text =
+      clean(
+        `${link?.text || ""} ${url} ${context}`
+      ).toLowerCase();
+
     if (
-      /certificate of registration|registration certificate|certificate|premium|policy|claim|customer education|branch locator|agent portal|login|mylic|download app|calculator/i.test(
-        text
+      isBlockedGeneralPage(
+        text,
+        url
       )
     ) {
-      return -300;
+      return -Infinity;
     }
 
     let score = 0;
 
     if (
-      /apply here|apply online|online application|apply for/.test(
+      /apply here|apply online|online application|apply now|click here to apply/.test(
         text
       )
     ) {
-      score += 140;
+      score += 180;
     }
 
     if (
-      /application|registration|register/.test(
+      /application form|application|registration|register online/.test(
         text
       )
     ) {
-      score += 90;
+      score += 100;
     }
 
     if (
@@ -1447,23 +1595,15 @@ async function discoverLIC(source) {
         text
       )
     ) {
-      score += 50;
-    }
-
-    if (
-      /scholarship|fellowship/.test(
-        text
-      )
-    ) {
       score += 60;
     }
 
     if (
-      /recruitment|vacancy|job|career/.test(
+      hasRecruitmentSignal(
         text
       )
     ) {
-      score += 40;
+      score += 60;
     }
 
     return score;
@@ -1475,17 +1615,19 @@ async function discoverLIC(source) {
   ) {
     const ranked =
       links
-        .map(link => ({
-          link,
-          score:
-            applyScore(
-              link,
-              context
-            )
-        }))
+        .map(
+          link => ({
+            link,
+            score:
+              applyScore(
+                link,
+                context
+              )
+          })
+        )
         .filter(
           item =>
-            item.score >= 80
+            item.score >= 100
         )
         .sort(
           (a, b) =>
@@ -1494,7 +1636,11 @@ async function discoverLIC(source) {
         );
 
     return ranked.length
-      ? ranked[0].link.url
+      ? normalizeLICUrl(
+          ranked[0]
+            .link
+            .url
+        )
       : null;
   }
 
@@ -1507,12 +1653,18 @@ async function discoverLIC(source) {
     const page =
       clean(pageTitle);
 
+    /*
+     * Do not use generic page titles.
+     */
     if (
       page &&
-      !/^(home|homepage|careers|career|lic|life insurance corporation of india|golden jubilee foundation)$/i.test(
+      page.length >= 8 &&
+      !/^(home|homepage|careers|career|lic|life insurance corporation of india|customer education|golden jubilee foundation)$/i.test(
         page
       ) &&
-      page.length >= 8
+      !/customer education/i.test(
+        page
+      )
     ) {
       return page.slice(
         0,
@@ -1524,43 +1676,46 @@ async function discoverLIC(source) {
       links
         .map(textOf)
         .filter(Boolean)
-        .filter(text => {
-          const value =
-            text.toLowerCase();
+        .filter(
+          text => {
+            const value =
+              text.toLowerCase();
 
-          if (
-            type ===
-            "scholarship"
-          ) {
-            return /scholarship|fellowship/.test(
-              value
-            );
+            if (
+              type ===
+              "job"
+            ) {
+              return hasRecruitmentSignal(
+                value
+              );
+            }
+
+            if (
+              type ===
+              "scholarship"
+            ) {
+              return hasScholarshipSignal(
+                value
+              );
+            }
+
+            return true;
           }
-
-          if (
-            type === "job"
-          ) {
-            return /recruitment|vacancy|job|officer|assistant|engineer|aao|ado|apprentice|engagement/.test(
-              value
-            );
-          }
-
-          return relevant(
-            value
-          );
-        });
+        );
 
     if (
       useful.length
     ) {
-      return useful.sort(
-        (a, b) =>
-          b.length -
-          a.length
-      )[0].slice(
-        0,
-        300
-      );
+      return useful
+        .sort(
+          (a, b) =>
+            b.length -
+            a.length
+        )[0]
+        .slice(
+          0,
+          300
+        );
     }
 
     const slug =
@@ -1593,9 +1748,12 @@ async function discoverLIC(source) {
     }
 
     const normalized =
-      pageUrl.split("#")[0];
+      normalizeLICUrl(
+        pageUrl
+      );
 
     if (
+      !normalized ||
       visited.has(
         normalized
       )
@@ -1626,12 +1784,6 @@ async function discoverLIC(source) {
       return;
     }
 
-    /*
-     * IMPORTANT:
-     * fetchHtml() in your existing
-     * sources.js returns an object:
-     * { ok, status, html }
-     */
     if (
       !response?.ok ||
       !response?.html
@@ -1654,135 +1806,117 @@ async function discoverLIC(source) {
         html
       );
 
-    const pageContext =
+    const pageText =
       clean(
-        `${pageTitle} ${normalized}`
+        `${pageTitle} ${normalized} ${links
+          .map(textOf)
+          .join(" ")}`
       );
 
-    const relevantLinks =
-      links.filter(link =>
-        relevant(
-          textOf(link)
-        )
-      );
-
-    const hasRelevantContent =
-      relevant(
-        pageContext
-      ) ||
-      relevantLinks.length >
-        0;
-
-    /*
-     * Careers index itself should
-     * not become a fake job record.
-     * It should only lead us to the
-     * actual recruitment pages.
-     */
     const careerIndex =
       isCareerIndexPage(
         normalized,
         pageTitle
       );
 
+    /*
+     * Only actual recruitment/detail
+     * pages can become job records.
+     */
+    const recruitmentDetail =
+      isRecruitmentDetailPage(
+        normalized,
+        pageTitle,
+        links,
+        pageText
+      );
+
+    /*
+     * Never create an item from
+     * Careers index itself.
+     */
     if (
-      hasRelevantContent &&
-      !careerIndex
+      !careerIndex &&
+      !isBlockedGeneralPage(
+        pageText,
+        normalized
+      )
     ) {
-      let type =
-        classifyLIC(
-          pageContext
-        );
+      let type = null;
 
       /*
-       * If page title is generic,
-       * infer scholarship only from
-       * explicit scholarship links.
+       * Strong page-level classification.
+       */
+      if (
+        recruitmentDetail
+      ) {
+        type =
+          "job";
+      } else {
+        type =
+          classifyLIC(
+            `${pageTitle} ${normalized}`
+          );
+
+        /*
+         * Scholarship only when
+         * explicitly present.
+         */
+        if (
+          type ===
+          "scholarship" &&
+          !hasScholarshipSignal(
+            `${pageTitle} ${normalized}`
+          )
+        ) {
+          type = null;
+        }
+      }
+
+      /*
+       * If generic page title is not
+       * enough, inspect meaningful links.
        */
       if (!type) {
+        const combinedLinks =
+          links
+            .map(textOf)
+            .join(" ");
+
         if (
-          relevantLinks.some(
-            link =>
-              /scholarship|fellowship/i.test(
-                textOf(link)
-              )
+          hasScholarshipSignal(
+            combinedLinks
+          ) &&
+          !isBlockedGeneralPage(
+            combinedLinks
           )
         ) {
           type =
             "scholarship";
-        }
-      }
-
-      /*
-       * Infer recruitment only from
-       * explicit recruitment terms.
-       */
-      if (!type) {
-        if (
-          relevantLinks.some(
-            link =>
-              /recruitment|vacancy|vacancies|employment|job|jobs|officer|assistant|engineer|aao|ado|apprentice|engagement/i.test(
-                textOf(link)
-              )
-          )
-        ) {
-          type =
-            "job";
-        }
-      }
-
-      /*
-       * Other types.
-       */
-      if (!type) {
-        if (
-          relevantLinks.some(
-            link =>
-              /admit card|hall ticket|call letter/i.test(
-                textOf(link)
-              )
+        } else if (
+          hasAdmitCardSignal(
+            combinedLinks
           )
         ) {
           type =
             "admit-card";
-        }
-      }
-
-      if (!type) {
-        if (
-          relevantLinks.some(
-            link =>
-              /answer key|provisional key|final key/i.test(
-                textOf(link)
-              )
+        } else if (
+          hasAnswerKeySignal(
+            combinedLinks
           )
         ) {
           type =
             "answer-key";
-        }
-      }
-
-      if (!type) {
-        if (
-          relevantLinks.some(
-            link =>
-              /\bresult\b|results|scorecard|merit list|selection list/i.test(
-                textOf(link)
-              )
+        } else if (
+          hasResultSignal(
+            combinedLinks
           )
         ) {
           type =
             "result";
-        }
-      }
-
-      if (!type) {
-        if (
-          relevantLinks.some(
-            link =>
-              /syllabus|exam pattern|scheme of examination/i.test(
-                textOf(link)
-              )
+        } else if (
+          hasSyllabusSignal(
+            combinedLinks
           )
         ) {
           type =
@@ -1790,88 +1924,132 @@ async function discoverLIC(source) {
         }
       }
 
-      if (!type) {
-        if (
-          relevantLinks.some(
-            link =>
-              /admission|entrance examination|entrance/i.test(
-                textOf(link)
-              )
-          )
-        ) {
-          type =
-            "admission";
-        }
-      }
-
-      if (!type) {
-        if (
-          relevantLinks.some(
-            link =>
-              /notification|advertisement|notice|corrigendum|schedule|latest update/i.test(
-                textOf(link)
-              )
-          )
-        ) {
-          type =
-            "update";
-        }
-      }
-
       if (type) {
+        const context =
+          clean(
+            `${pageTitle} ${normalized} ${links
+              .map(textOf)
+              .join(" ")}`
+          );
+
         const notificationUrl =
           choosePDF(
             links,
-            pageContext
+            context
           );
 
         const applyUrl =
-          chooseApply(
-            links,
-            pageContext
-          );
+          type ===
+          "job"
+            ? chooseApply(
+                links,
+                context
+              )
+            : chooseApply(
+                links,
+                context
+              );
 
         const title =
           buildTitle(
             pageTitle,
-            relevantLinks,
+            links,
             type,
             normalized
           );
 
         /*
-         * Recruitment jobs must have
-         * three distinct official URLs.
+         * Recruitment jobs MUST have:
+         * 1. detail page
+         * 2. notification PDF
+         * 3. apply URL
+         *
+         * All three must be different.
          */
-        const requiresThreeLinks =
-          type === "job";
-
-        const validThreeLinks =
-          Boolean(
-            notificationUrl
-          ) &&
-          Boolean(
-            applyUrl
-          ) &&
-          !sameUrl(
-            normalized,
-            notificationUrl
-          ) &&
-          !sameUrl(
-            normalized,
-            applyUrl
-          ) &&
-          !sameUrl(
-            notificationUrl,
-            applyUrl
-          );
-
         if (
-          !requiresThreeLinks ||
-          validThreeLinks
+          type ===
+          "job"
         ) {
+          const valid =
+            Boolean(
+              notificationUrl
+            ) &&
+            Boolean(
+              applyUrl
+            ) &&
+            !sameUrl(
+              normalized,
+              notificationUrl
+            ) &&
+            !sameUrl(
+              normalized,
+              applyUrl
+            ) &&
+            !sameUrl(
+              notificationUrl,
+              applyUrl
+            );
+
+          if (!valid) {
+            /*
+             * Do not publish incomplete
+             * recruitment records.
+             */
+          } else {
+            const key =
+              `job|${normalizeLICUrl(
+                normalized
+              )}`;
+
+            if (
+              !seen.has(key)
+            ) {
+              seen.add(key);
+
+              candidates.push({
+                type: "job",
+
+                title:
+                  title.slice(
+                    0,
+                    300
+                  ),
+
+                organization:
+                  "Life Insurance Corporation of India (LIC)",
+
+                category:
+                  "LIC Recruitment",
+
+                description:
+                  `Official LIC recruitment: ${title}`,
+
+                official_url:
+                  normalized,
+
+                notification_url:
+                  notificationUrl,
+
+                apply_url:
+                  applyUrl,
+
+                source_url:
+                  normalized,
+
+                source_name:
+                  source.name
+              });
+            }
+          }
+        } else {
+          /*
+           * Non-job items can be added
+           * without the three-link rule.
+           */
           const key =
-            `${type}|${normalized}`;
+            `${type}|${normalizeLICUrl(
+              normalized
+            )}`;
 
           if (
             !seen.has(key)
@@ -1891,10 +2069,8 @@ async function discoverLIC(source) {
                 "Life Insurance Corporation of India (LIC)",
 
               category:
-                type === "job"
-                  ? "LIC Recruitment"
-                  : type ===
-                    "scholarship"
+                type ===
+                "scholarship"
                   ? "Scholarship"
                   : type ===
                     "admit-card"
@@ -1937,8 +2113,8 @@ async function discoverLIC(source) {
     }
 
     /*
-     * Continue crawling relevant
-     * official LIC pages.
+     * Continue crawling only useful
+     * official LIC links.
      */
     if (
       depth >=
@@ -1952,18 +2128,28 @@ async function discoverLIC(source) {
         .filter(
           link =>
             isOfficialLICUrl(
-              link.url
+              link?.url
             )
         )
         .filter(
           link =>
             !isPdf(
-              link.url,
-              link.text
+              link?.url,
+              link?.text
             )
+        )
+        .map(
+          link => ({
+            ...link,
+            url:
+              normalizeLICUrl(
+                link.url
+              )
+          })
         )
         .filter(
           link =>
+            link.url &&
             !sameUrl(
               link.url,
               normalized
@@ -1971,9 +2157,42 @@ async function discoverLIC(source) {
         )
         .filter(
           link =>
-            relevant(
-              textOf(link)
+            !isBlockedGeneralPage(
+              textOf(link),
+              link.url
             )
+        )
+        .filter(
+          link => {
+            const value =
+              textOf(
+                link
+              );
+
+            return (
+              hasRecruitmentSignal(
+                value
+              ) ||
+              hasScholarshipSignal(
+                value
+              ) ||
+              hasAdmitCardSignal(
+                value
+              ) ||
+              hasAnswerKeySignal(
+                value
+              ) ||
+              hasResultSignal(
+                value
+              ) ||
+              hasSyllabusSignal(
+                value
+              ) ||
+              /notification|advertisement|notice|corrigendum|schedule/i.test(
+                value
+              )
+            );
+          }
         )
         .sort(
           (a, b) =>
@@ -2005,10 +2224,9 @@ async function discoverLIC(source) {
   }
 
   /*
-   * Start from LIC's stable
-   * official sections.
-   *
-   * No year is hard-coded.
+   * Start only from Careers.
+   * LIC currently exposes recruitment
+   * listings through this official page.
    */
   for (
     const seed of seedPages
@@ -2031,7 +2249,6 @@ async function discoverLIC(source) {
     CANDIDATE_LIMIT
   );
 }
-    
 /* -------------------------------- */
 /* Adapter registry                  */
 /* -------------------------------- */
