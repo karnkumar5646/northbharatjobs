@@ -1092,21 +1092,16 @@ async function discoverFromSource(
 
 async function discoverLIC(source) {
   /*
-   * LIC discovery is intentionally limited to
-   * pages that are actually reachable from the
-   * official LIC Careers page.
-   *
-   * Rules:
-   * - Never invent recruitment URLs.
-   * - Never invent notification URLs.
-   * - Never invent apply URLs.
-   * - Recruitment detail page must be an actual
-   *   page found on LIC's official website.
-   * - Notification must be an actual PDF linked
-   *   from that page or its relevant LIC page.
-   * - Apply URL must be an actual link exposed
-   *   by LIC. External recruitment portals are
-   *   allowed only when LIC itself links to them.
+   * LIC discovery:
+   * - Never invent URLs.
+   * - Only follow LIC pages discovered from LIC.
+   * - External apply URLs are accepted only when
+   *   actually exposed by an LIC page.
+   * - Notification must be an actual LIC PDF.
+   * - Recruitment requires:
+   *      1. LIC detail page
+   *      2. LIC notification PDF
+   *      3. real application URL
    */
 
   const seedPages = [
@@ -1117,61 +1112,34 @@ async function discoverLIC(source) {
   const visited = new Set();
   const seenCandidates = new Set();
 
-  const MAX_PAGES = 50;
-  const MAX_LINKS = 400;
-  const MAX_DEPTH = 4;
+  const MAX_PAGES = 60;
+  const MAX_LINKS = 500;
+  const MAX_DEPTH = 5;
 
-  /* ----------------------------- */
-  /* LIC domain                     */
-  /* ----------------------------- */
+  /* -------------------------------- */
+  /* LIC domain                       */
+  /* -------------------------------- */
 
   function isOfficialLICUrl(url) {
     if (!url) return false;
 
-    const host = hostOf(url);
+    try {
+      const host = new URL(url).hostname
+        .toLowerCase()
+        .replace(/^www\./, "");
 
-    return (
-      host === "licindia.in" ||
-      host === "www.licindia.in" ||
-      host.endsWith(".licindia.in")
-    );
-  }
-
-  /*
-   * External application domains are NOT
-   * accepted blindly.
-   *
-   * They are accepted only if the URL was
-   * actually discovered as a link from LIC.
-   */
-  function isAllowedApplyUrl(url) {
-    if (!url) return false;
-
-    const host = hostOf(url);
-
-    if (!host) return false;
-
-    if (isOfficialLICUrl(url)) {
-      return true;
+      return (
+        host === "licindia.in" ||
+        host.endsWith(".licindia.in")
+      );
+    } catch {
+      return false;
     }
-
-    /*
-     * LIC recruitment currently uses external
-     * recruitment/application infrastructure
-     * for some recruitment processes.
-     *
-     * These domains are accepted only after
-     * their URL has been discovered from LIC.
-     */
-    return (
-      host === "ibpsonline.ibps.in" ||
-      host.endsWith(".ibps.in")
-    );
   }
 
-  /* ----------------------------- */
-  /* URL normalization              */
-  /* ----------------------------- */
+  /* -------------------------------- */
+  /* URL normalization                */
+  /* -------------------------------- */
 
   function normalizeLICUrl(url) {
     if (!url) return "";
@@ -1181,10 +1149,6 @@ async function discoverLIC(source) {
 
       u.hash = "";
 
-      /*
-       * Remove tracking parameters only.
-       * Functional query parameters are retained.
-       */
       const trackingParams = [
         "utm_source",
         "utm_medium",
@@ -1197,23 +1161,16 @@ async function discoverLIC(source) {
         "mc_eid"
       ];
 
-      for (
-        const key of trackingParams
-      ) {
+      for (const key of trackingParams) {
         u.searchParams.delete(key);
       }
 
-      u.hostname =
-        u.hostname.toLowerCase();
+      u.hostname = u.hostname.toLowerCase();
 
       u.pathname =
-        u.pathname.replace(
-          /\/+$/,
-          ""
-        ) || "/";
+        u.pathname.replace(/\/+$/, "") || "/";
 
       return u.toString();
-
     } catch {
       return String(url)
         .split("#")[0]
@@ -1222,228 +1179,492 @@ async function discoverLIC(source) {
   }
 
   function sameLICUrl(a, b) {
-    if (!a || !b) return false;
-
     return (
       normalizeLICUrl(a) ===
       normalizeLICUrl(b)
     );
   }
 
-  /* ----------------------------- */
-  /* Text helpers                   */
-  /* ----------------------------- */
+  /* -------------------------------- */
+  /* External URL safety              */
+  /* -------------------------------- */
 
-  function linkText(link) {
+  function isAllowedApplyUrl(url) {
+    if (!url) return false;
+
+    try {
+      const u = new URL(url);
+
+      if (
+        u.protocol !== "http:" &&
+        u.protocol !== "https:"
+      ) {
+        return false;
+      }
+
+      /*
+       * LIC-hosted application URL is always allowed.
+       */
+      if (isOfficialLICUrl(url)) {
+        return true;
+      }
+
+      /*
+       * External URLs are allowed only because
+       * they were actually extracted from an LIC
+       * page. We do NOT whitelist arbitrary domains.
+       */
+      return true;
+
+    } catch {
+      return false;
+    }
+  }
+
+  /* -------------------------------- */
+  /* LIC-specific link extractor      */
+  /* -------------------------------- */
+
+  function extractLICLinks(
+    html,
+    baseUrl,
+    limit = MAX_LINKS
+  ) {
+    const found = [];
+    const seen = new Set();
+
+    function add(raw, text = "", sourceType = "html") {
+      if (!raw) return;
+
+      let value = String(raw)
+        .trim()
+        .replace(/^['"]|['"]$/g, "");
+
+      if (!value) return;
+
+      /*
+       * Ignore non-navigation values.
+       */
+      if (
+        value.startsWith("#") ||
+        /^javascript:\s*void/i.test(value) ||
+        /^javascript:\s*return/i.test(value) ||
+        /^mailto:/i.test(value) ||
+        /^tel:/i.test(value) ||
+        /^data:/i.test(value)
+      ) {
+        return;
+      }
+
+      /*
+       * Decode common HTML entities.
+       */
+      value = value
+        .replace(/&amp;/gi, "&")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">");
+
+      let absolute = "";
+
+      try {
+        absolute = new URL(
+          value,
+          baseUrl
+        ).toString();
+      } catch {
+        return;
+      }
+
+      if (
+        !/^https?:\/\//i.test(
+          absolute
+        )
+      ) {
+        return;
+      }
+
+      absolute =
+        normalizeLICUrl(
+          absolute
+        );
+
+      if (!absolute) return;
+
+      const key =
+        absolute.toLowerCase();
+
+      if (seen.has(key)) return;
+
+      seen.add(key);
+
+      found.push({
+        url: absolute,
+        text: clean(text || ""),
+        sourceType
+      });
+    }
+
+    /*
+     * --------------------------------
+     * 1. Normal anchor tags
+     * --------------------------------
+     */
+
+    const anchorRegex =
+      /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+
+    let match;
+
+    while (
+      (match =
+        anchorRegex.exec(html)) !== null
+    ) {
+      const attrs =
+        match[1] || "";
+
+      const body =
+        match[2] || "";
+
+      const hrefMatch =
+        attrs.match(
+          /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i
+        );
+
+      if (hrefMatch) {
+        const href =
+          hrefMatch[1] ??
+          hrefMatch[2] ??
+          hrefMatch[3];
+
+        const text =
+          clean(
+            body
+              .replace(
+                /<[^>]*>/g,
+                " "
+              )
+          );
+
+        add(
+          href,
+          text,
+          "anchor"
+        );
+      }
+
+      /*
+       * Liferay / JS generated attributes.
+       */
+      const dataNames = [
+        "data-href",
+        "data-url",
+        "data-link",
+        "data-target",
+        "data-download-url",
+        "data-document-url"
+      ];
+
+      for (
+        const name of dataNames
+      ) {
+        const re =
+          new RegExp(
+            "\\b" +
+              name +
+              "\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+            "i"
+          );
+
+        const dataMatch =
+          attrs.match(re);
+
+        if (dataMatch) {
+          add(
+            dataMatch[1] ??
+              dataMatch[2] ??
+              dataMatch[3],
+            clean(
+              body.replace(
+                /<[^>]*>/g,
+                " "
+              )
+            ),
+            "data"
+          );
+        }
+      }
+
+      /*
+       * onclick="window.open('URL')"
+       * onclick="location.href='URL'"
+       * etc.
+       */
+      const onclickMatch =
+        attrs.match(
+          /\bonclick\s*=\s*["']([\s\S]*?)["']/i
+        );
+
+      if (onclickMatch) {
+        const onclick =
+          onclickMatch[1];
+
+        const urlMatches =
+          onclick.match(
+            /https?:\/\/[^\s"'<>\\)]+|['"]([^'"]+)['"]/gi
+          );
+
+        if (urlMatches) {
+          for (
+            const item of urlMatches
+          ) {
+            const cleaned =
+              item
+                .replace(/^['"]/, "")
+                .replace(/['"]$/, "");
+
+            if (
+              /^(https?:\/\/|\/)/i.test(
+                cleaned
+              )
+            ) {
+              add(
+                cleaned,
+                clean(
+                  body.replace(
+                    /<[^>]*>/g,
+                    " "
+                  )
+                ),
+                "onclick"
+              );
+            }
+          }
+        }
+      }
+
+      if (
+        found.length >= limit
+      ) {
+        break;
+      }
+    }
+
+    /*
+     * --------------------------------
+     * 2. Forms
+     * --------------------------------
+     */
+
+    const formRegex =
+      /<form\b([^>]*)>/gi;
+
+    while (
+      (match =
+        formRegex.exec(html)) !== null
+    ) {
+      const attrs =
+        match[1] || "";
+
+      const actionMatch =
+        attrs.match(
+          /\baction\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i
+        );
+
+      if (actionMatch) {
+        add(
+          actionMatch[1] ??
+            actionMatch[2] ??
+            actionMatch[3],
+          "application form",
+          "form"
+        );
+      }
+
+      if (
+        found.length >= limit
+      ) {
+        break;
+      }
+    }
+
+    /*
+     * --------------------------------
+     * 3. Generic data attributes
+     * --------------------------------
+     */
+
+    const genericDataRegex =
+      /\b(?:data-href|data-url|data-link|data-target|data-download-url|data-document-url)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
+
+    while (
+      (match =
+        genericDataRegex.exec(html)) !== null
+    ) {
+      add(
+        match[1] ??
+          match[2] ??
+          match[3],
+        "",
+        "generic-data"
+      );
+
+      if (
+        found.length >= limit
+      ) {
+        break;
+      }
+    }
+
+    /*
+     * --------------------------------
+     * 4. Absolute URLs embedded in HTML
+     * --------------------------------
+     *
+     * This is especially useful for pages
+     * generated by Liferay / JavaScript.
+     */
+
+    const absoluteUrlRegex =
+      /https?:\/\/[^\s"'<>\\)]+/gi;
+
+    const rawUrls =
+      html.match(
+        absoluteUrlRegex
+      ) || [];
+
+    for (
+      const raw of rawUrls
+    ) {
+      add(
+        raw,
+        "",
+        "raw-url"
+      );
+
+      if (
+        found.length >= limit
+      ) {
+        break;
+      }
+    }
+
+    /*
+     * --------------------------------
+     * 5. Shared extractor as fallback
+     * --------------------------------
+     */
+
+    try {
+      const generic =
+        extractLinks(
+          html,
+          baseUrl,
+          limit
+        ) || [];
+
+      for (
+        const link of generic
+      ) {
+        add(
+          link?.url,
+          link?.text || "",
+          "generic"
+        );
+
+        if (
+          found.length >= limit
+        ) {
+          break;
+        }
+      }
+    } catch {}
+
+    return found.slice(
+      0,
+      limit
+    );
+  }
+
+  /* -------------------------------- */
+  /* Text helpers                     */
+  /* -------------------------------- */
+
+  function getLinkText(link) {
     return clean(
       `${link?.text || ""} ${link?.url || ""}`
     );
   }
 
-  function pageContext(
-    pageTitle,
-    pageUrl,
-    links
+  function getContext(
+    title,
+    url,
+    links,
+    pageText = ""
   ) {
     return clean(
       [
-        pageTitle,
-        pageUrl,
+        title,
+        url,
+        pageText,
         ...links.map(
           link =>
-            `${link.text || ""} ${link.url || ""}`
+            `${link?.text || ""} ${link?.url || ""}`
         )
       ].join(" ")
     );
   }
 
-  /* ----------------------------- */
-  /* Generic page blocker           */
-  /* ----------------------------- */
+  /* -------------------------------- */
+  /* Recruitment signals              */
+  /* -------------------------------- */
 
-  function isGenericLICPage(
-    text,
-    url = ""
-  ) {
-    const value =
-      clean(text).toLowerCase();
-
-    const urlValue =
-      String(url || "").toLowerCase();
-
-    /*
-     * Block by URL where the URL itself
-     * clearly identifies a generic page.
-     */
-    if (
-      /customer-education|customer_education|golden-jubilee-foundation|branch-locator|privacy-policy|terms-and-conditions|annual-report|financial-statement|investor-relations/i.test(
-        urlValue
-      )
-    ) {
-      return true;
-    }
-
-    /*
-     * IMPORTANT:
-     *
-     * Do NOT block a recruitment page merely
-     * because its footer contains words such as
-     * "Contact Us", "Privacy Policy", etc.
-     *
-     * Only a page whose actual identifying text
-     * is generic should be blocked.
-     */
-    if (
-      /^(home|homepage|login|contact us|about us|customer education|privacy policy|terms and conditions|branch locator|mylic)$/i.test(
-        value
-      )
-    ) {
-      return true;
-    }
-
-    return false;
-  }
-
-  /* ----------------------------- */
-  /* Recruitment signals            */
-  /* ----------------------------- */
-
-  function hasRecruitmentSignal(
-    text
-  ) {
+  function hasRecruitmentSignal(text) {
     return /recruitment|recruitment notification|employment notice|employment notification|vacancy|vacancies|career opportunity|career opportunities|job opportunity|job opportunities|online application|application form|engagement of|appointment of|selection of|direct recruitment|assistant engineer|assistant administrative officer|assistant administrative officers|\baao\b|\bado\b|apprentice development officer|officer|engineer|actuary|chief financial officer|\bcfo\b/i.test(
       clean(text)
     );
   }
 
-  function hasStrongRecruitmentSignal(
-    text
-  ) {
+  function hasStrongRecruitmentSignal(text) {
     return /recruitment notification|employment notification|employment notice|recruitment|vacancy|vacancies|online application|engagement of|appointment of|direct recruitment|assistant administrative officer|assistant engineer|apprentice development officer|chief financial officer|\baao\b|\bado\b/i.test(
       clean(text)
     );
   }
 
-  function hasScholarshipSignal(
-    text
-  ) {
+  function hasScholarshipSignal(text) {
     return /scholarship|fellowship/i.test(
       clean(text)
     );
   }
 
-  function hasAdmitSignal(
-    text
-  ) {
+  function hasAdmitSignal(text) {
     return /admit card|admit-card|hall ticket|call letter|download admit/i.test(
       clean(text)
     );
   }
 
-  function hasResultSignal(
-    text
-  ) {
+  function hasResultSignal(text) {
     return /\bresult\b|results|scorecard|score card|merit list|selection list|shortlisted candidates|shortlist|final result/i.test(
       clean(text)
     );
   }
 
-  function hasAnswerKeySignal(
-    text
-  ) {
+  function hasAnswerKeySignal(text) {
     return /answer key|answer-key|provisional key|final key/i.test(
       clean(text)
     );
   }
 
-  function hasSyllabusSignal(
-    text
-  ) {
+  function hasSyllabusSignal(text) {
     return /syllabus|exam pattern|scheme of examination/i.test(
       clean(text)
     );
   }
 
-  /* ----------------------------- */
-  /* Page classification            */
-  /* ----------------------------- */
-
-  function classifyLIC(
-    text
-  ) {
-    const value =
-      clean(text).toLowerCase();
-
-    if (
-      hasScholarshipSignal(
-        value
-      )
-    ) {
-      return "scholarship";
-    }
-
-    if (
-      hasAdmitSignal(
-        value
-      )
-    ) {
-      return "admit-card";
-    }
-
-    if (
-      hasAnswerKeySignal(
-        value
-      )
-    ) {
-      return "answer-key";
-    }
-
-    if (
-      hasResultSignal(
-        value
-      )
-    ) {
-      return "result";
-    }
-
-    if (
-      hasSyllabusSignal(
-        value
-      )
-    ) {
-      return "syllabus";
-    }
-
-    if (
-      hasStrongRecruitmentSignal(
-        value
-      )
-    ) {
-      return "job";
-    }
-
-    if (
-      /admission|entrance examination|entrance/i.test(
-        value
-      )
-    ) {
-      return "admission";
-    }
-
-    if (
-      /notification|advertisement|notice|corrigendum|schedule|latest update/i.test(
-        value
-      )
-    ) {
-      return "update";
-    }
-
-    return null;
-  }
-
-  /* ----------------------------- */
-  /* Careers page detection         */
-  /* ----------------------------- */
+  /* -------------------------------- */
+  /* Careers index                    */
+  /* -------------------------------- */
 
   function isCareerIndexPage(
     url,
@@ -1467,9 +1688,36 @@ async function discoverLIC(source) {
     );
   }
 
-  /* ----------------------------- */
-  /* Recruitment detail detection  */
-  /* ----------------------------- */
+  /* -------------------------------- */
+  /* Generic page detection           */
+  /* -------------------------------- */
+
+  function isGenericLICPage(
+    title,
+    url
+  ) {
+    const t =
+      clean(title).toLowerCase();
+
+    const u =
+      String(url || "").toLowerCase();
+
+    if (
+      /customer-education|customer_education|golden-jubilee-foundation|branch-locator|privacy-policy|terms-and-conditions|annual-report|financial-statement|investor-relations/i.test(
+        u
+      )
+    ) {
+      return true;
+    }
+
+    return /^(home|homepage|login|contact us|about us|customer education|privacy policy|terms and conditions|branch locator|mylic)$/i.test(
+      t
+    );
+  }
+
+  /* -------------------------------- */
+  /* Recruitment detail               */
+  /* -------------------------------- */
 
   function isRecruitmentDetailPage(
     url,
@@ -1486,19 +1734,6 @@ async function discoverLIC(source) {
       return false;
     }
 
-    const context =
-      clean(
-        [
-          title,
-          url,
-          pageText,
-          ...links.map(
-            link =>
-              `${link.text || ""} ${link.url || ""}`
-          )
-        ].join(" ")
-      );
-
     if (
       isGenericLICPage(
         title,
@@ -1508,46 +1743,86 @@ async function discoverLIC(source) {
       return false;
     }
 
+    const identity =
+      clean(
+        `${title} ${url}`
+      );
+
+    const linkContext =
+      links
+        .map(
+          link =>
+            clean(
+              link?.text
+            )
+        )
+        .filter(Boolean)
+        .filter(
+          text =>
+            !/^(home|login|contact us|about us|privacy policy|terms and conditions|customer education|branch locator|read more|view more|menu)$/i.test(
+              text
+            )
+        )
+        .join(" ");
+
+    const context =
+      clean(
+        `${identity} ${pageText || ""} ${linkContext}`
+      );
+
     /*
-     * A detail page should have stronger
-     * recruitment evidence than just the word
-     * "career" in a navigation link.
+     * Recruitment detail pages normally expose
+     * at least one of these strong indicators.
      */
-    return hasStrongRecruitmentSignal(
-      context
-    );
+    if (
+      hasStrongRecruitmentSignal(
+        context
+      )
+    ) {
+      return true;
+    }
+
+    /*
+     * URL itself can identify recruitment pages
+     * even when page text is sparse.
+     */
+    if (
+      /\/recruitment|recruitment-|\/career-opportunit|\/engagement-of|\/appointment-of|\/vacanc/i.test(
+        url
+      )
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
-  /* ----------------------------- */
-  /* Year extraction                */
-  /* ----------------------------- */
+  /* -------------------------------- */
+  /* Year extraction                  */
+  /* -------------------------------- */
 
-  function extractYears(
-    text
-  ) {
+  function extractYears(text) {
     return [
-      ...String(
-        text || ""
-      ).matchAll(
+      ...String(text || "").matchAll(
         /\b(20\d{2})\b/g
       )
     ]
       .map(
-        match =>
+        m =>
           Number(
-            match[1]
+            m[1]
           )
       )
       .filter(
-        year =>
-          year >= 2020 &&
-          year <= 2099
+        y =>
+          y >= 2020 &&
+          y <= 2099
       );
   }
 
-  /* ----------------------------- */
-  /* Notification PDF scoring       */
-  /* ----------------------------- */
+  /* -------------------------------- */
+  /* Notification PDF                 */
+  /* -------------------------------- */
 
   function notificationScore(
     link,
@@ -1557,12 +1832,9 @@ async function discoverLIC(source) {
       return -Infinity;
     }
 
-    const url =
-      link.url;
-
     if (
       !isOfficialLICUrl(
-        url
+        link.url
       )
     ) {
       return -Infinity;
@@ -1570,7 +1842,7 @@ async function discoverLIC(source) {
 
     if (
       !isPdf(
-        url,
+        link.url,
         link.text
       )
     ) {
@@ -1579,12 +1851,9 @@ async function discoverLIC(source) {
 
     const text =
       clean(
-        `${link.text || ""} ${url} ${context}`
+        `${link.text || ""} ${link.url} ${context}`
       ).toLowerCase();
 
-    /*
-     * Reject unrelated LIC PDFs.
-     */
     if (
       /certificate of registration|registration certificate|premium receipt|policy document|claim form|claim settlement|customer education|branch locator|annual report|financial statement|privacy policy|terms and conditions|investor relations/i.test(
         text
@@ -1600,7 +1869,7 @@ async function discoverLIC(source) {
         text
       )
     ) {
-      score += 220;
+      score += 300;
     }
 
     if (
@@ -1608,7 +1877,7 @@ async function discoverLIC(source) {
         text
       )
     ) {
-      score += 170;
+      score += 220;
     }
 
     if (
@@ -1616,7 +1885,7 @@ async function discoverLIC(source) {
         text
       )
     ) {
-      score += 100;
+      score += 120;
     }
 
     if (
@@ -1624,7 +1893,7 @@ async function discoverLIC(source) {
         text
       )
     ) {
-      score += 100;
+      score += 120;
     }
 
     if (
@@ -1632,7 +1901,7 @@ async function discoverLIC(source) {
         text
       )
     ) {
-      score += 35;
+      score += 30;
     }
 
     if (
@@ -1640,11 +1909,7 @@ async function discoverLIC(source) {
         text
       )
     ) {
-      /*
-       * Results/answer keys should not outrank
-       * a recruitment notification for a job.
-       */
-      score -= 80;
+      score -= 100;
     }
 
     const years =
@@ -1697,15 +1962,13 @@ async function discoverLIC(source) {
     }
 
     return normalizeLICUrl(
-      ranked[0]
-        .link
-        .url
+      ranked[0].link.url
     );
   }
 
-  /* ----------------------------- */
-  /* Apply-link scoring             */
-  /* ----------------------------- */
+  /* -------------------------------- */
+  /* Apply URL                        */
+  /* -------------------------------- */
 
   function applyScore(
     link,
@@ -1715,12 +1978,9 @@ async function discoverLIC(source) {
       return -Infinity;
     }
 
-    const url =
-      link.url;
-
     if (
       isPdf(
-        url,
+        link.url,
         link.text
       )
     ) {
@@ -1729,7 +1989,7 @@ async function discoverLIC(source) {
 
     if (
       !isAllowedApplyUrl(
-        url
+        link.url
       )
     ) {
       return -Infinity;
@@ -1737,15 +1997,14 @@ async function discoverLIC(source) {
 
     const text =
       clean(
-        `${link.text || ""} ${url} ${context}`
+        `${link.text || ""} ${link.url}`
       ).toLowerCase();
 
     /*
-     * Generic LIC navigation pages must never
-     * become application URLs.
+     * Do not use generic site navigation.
      */
     if (
-      /customer education|customer-education|branch locator|privacy policy|terms and conditions|annual report|financial statement|investor relations|login|mylic|contact us|about us/i.test(
+      /customer education|customer-education|branch locator|privacy policy|terms and conditions|annual report|financial statement|investor relations|contact us|about us/i.test(
         text
       )
     ) {
@@ -1759,47 +2018,43 @@ async function discoverLIC(source) {
         text
       )
     ) {
-      score += 240;
+      score += 300;
     }
 
     if (
-      /application form|application|registration|register online|candidate login/i.test(
+      /application form|application|registration|register online|candidate login|reprint.*application|application.*reprint/i.test(
         text
       )
     ) {
-      score += 130;
+      score += 180;
     }
 
     if (
-      /\bapply\b|click here/i.test(
+      /\bapply\b|click here|register/i.test(
         text
       )
     ) {
-      score += 70;
+      score += 80;
     }
 
-    /*
-     * Recruitment context increases confidence.
-     */
     if (
       hasRecruitmentSignal(
         context
       )
     ) {
-      score += 60;
+      score += 80;
     }
 
     /*
-     * External application domains get a small
-     * confidence reduction compared with LIC
-     * hosted application pages.
+     * External URL is fine if it was actually
+     * extracted from LIC's official page.
      */
     if (
       !isOfficialLICUrl(
-        url
+        link.url
       )
     ) {
-      score -= 10;
+      score -= 5;
     }
 
     return score;
@@ -1838,15 +2093,13 @@ async function discoverLIC(source) {
     }
 
     return normalizeLICUrl(
-      ranked[0]
-        .link
-        .url
+      ranked[0].link.url
     );
   }
 
-  /* ----------------------------- */
-  /* Title creation                 */
-  /* ----------------------------- */
+  /* -------------------------------- */
+  /* Title                            */
+  /* -------------------------------- */
 
   function buildLICTitle(
     pageTitle,
@@ -1859,9 +2112,6 @@ async function discoverLIC(source) {
         pageTitle
       );
 
-    /*
-     * Keep meaningful recruitment page titles.
-     */
     if (
       title &&
       title.length >= 8 &&
@@ -1893,8 +2143,7 @@ async function discoverLIC(source) {
         .filter(
           text => {
             if (
-              type ===
-              "job"
+              type === "job"
             ) {
               return hasRecruitmentSignal(
                 text
@@ -1902,8 +2151,7 @@ async function discoverLIC(source) {
             }
 
             if (
-              type ===
-              "scholarship"
+              type === "scholarship"
             ) {
               return hasScholarshipSignal(
                 text
@@ -1955,43 +2203,21 @@ async function discoverLIC(source) {
     return "LIC Official Update";
   }
 
-  /* ----------------------------- */
-  /* Candidate key                  */
-  /* ----------------------------- */
+  /* -------------------------------- */
+  /* Candidate                        */
+  /* -------------------------------- */
 
-  function candidateKey(
-    type,
-    url
-  ) {
-    return (
-      `${type}|${normalizeLICUrl(
-        url
-      )}`
-    );
-  }
-
-  /* ----------------------------- */
-  /* Candidate creation             */
-  /* ----------------------------- */
-
-  function addCandidate(
-    candidate
-  ) {
-    if (!candidate) {
-      return;
-    }
-
+  function addCandidate(candidate) {
     if (
-      !candidate.official_url
+      !candidate?.official_url
     ) {
       return;
     }
 
     const key =
-      candidateKey(
-        candidate.type,
+      `${candidate.type}|${normalizeLICUrl(
         candidate.official_url
-      );
+      )}`;
 
     if (
       seenCandidates.has(
@@ -2010,30 +2236,18 @@ async function discoverLIC(source) {
     );
   }
 
-  /* ----------------------------- */
-  /* Page inspection                */
-  /* ----------------------------- */
+  /* -------------------------------- */
+  /* Page inspection                  */
+  /* -------------------------------- */
 
   async function inspect(
     pageUrl,
     depth = 0
   ) {
     if (
-      !pageUrl
-    ) {
-      return;
-    }
-
-    if (
-      visited.size >=
-      MAX_PAGES
-    ) {
-      return;
-    }
-
-    if (
-      candidates.length >=
-      CANDIDATE_LIMIT
+      !pageUrl ||
+      visited.size >= MAX_PAGES ||
+      candidates.length >= CANDIDATE_LIMIT
     ) {
       return;
     }
@@ -2044,24 +2258,10 @@ async function discoverLIC(source) {
       );
 
     if (
-      !normalized
-    ) {
-      return;
-    }
-
-    /*
-     * The crawler itself only follows LIC
-     * pages. External domains are never crawled.
-     */
-    if (
+      !normalized ||
       !isOfficialLICUrl(
         normalized
-      )
-    ) {
-      return;
-    }
-
-    if (
+      ) ||
       visited.has(
         normalized
       )
@@ -2088,38 +2288,54 @@ async function discoverLIC(source) {
     const html =
       response.html;
 
+    /*
+     * IMPORTANT:
+     * Use the LIC-specific extractor first.
+     */
     const links =
-      extractLinks(
+      extractLICLinks(
         html,
         normalized,
         MAX_LINKS
       );
 
     const pageTitle =
-      extractTitle(
-        html
+      clean(
+        extractTitle(
+          html
+        )
       );
 
     /*
-     * Use only meaningful page content for
-     * page classification. Link text is useful,
-     * but footer/navigation text must not alone
-     * turn a generic page into a recruitment page.
+     * Do not depend on footer text for page identity.
      */
-    const meaningfulLinkText =
+    const meaningfulLinks =
       links
         .map(
-          link =>
-            clean(
-              link?.text
-            )
+          link => ({
+            ...link,
+            text:
+              clean(
+                link?.text
+              )
+          })
         )
-        .filter(Boolean)
         .filter(
-          text =>
-            !/^(home|login|contact us|about us|privacy policy|terms and conditions|customer education|branch locator|read more|view more|menu)$/i.test(
-              text
+          link =>
+            link.text
+        )
+        .filter(
+          link =>
+            !/^(home|login|contact us|about us|privacy policy|terms and conditions|customer education|branch locator|read more|view more|menu|search)$/i.test(
+              link.text
             )
+        );
+
+    const meaningfulLinkText =
+      meaningfulLinks
+        .map(
+          link =>
+            link.text
         )
         .join(" ");
 
@@ -2151,15 +2367,13 @@ async function discoverLIC(source) {
       isRecruitmentDetailPage(
         normalized,
         pageTitle,
-        links,
+        meaningfulLinks,
         meaningfulLinkText
       );
 
-    /*
-     * --------------------------------
-     * RECRUITMENT
-     * --------------------------------
-     */
+    /* -------------------------------- */
+    /* Recruitment                      */
+    /* -------------------------------- */
 
     if (
       recruitmentDetail
@@ -2176,15 +2390,6 @@ async function discoverLIC(source) {
           context
         );
 
-      /*
-       * Recruitment record requires:
-       *
-       * 1. LIC detail page
-       * 2. LIC notification PDF
-       * 3. actual apply URL
-       *
-       * All must be different.
-       */
       const valid =
         Boolean(
           notificationUrl
@@ -2217,8 +2422,7 @@ async function discoverLIC(source) {
           );
 
         addCandidate({
-          type:
-            "job",
+          type: "job",
 
           title:
             title.slice(
@@ -2253,16 +2457,9 @@ async function discoverLIC(source) {
       }
     }
 
-    /*
-     * --------------------------------
-     * NON-RECRUITMENT OFFICIAL UPDATES
-     * --------------------------------
-     *
-     * We intentionally do not create generic
-     * update records from every LIC notice.
-     * Only strong, identifiable categories are
-     * considered.
-     */
+    /* -------------------------------- */
+    /* Other LIC updates                 */
+    /* -------------------------------- */
 
     if (
       !careerIndex &&
@@ -2270,41 +2467,82 @@ async function discoverLIC(source) {
       !recruitmentDetail
     ) {
       let type =
-        classifyLIC(
+        null;
+
+      /*
+       * Page title + URL first.
+       */
+      if (
+        hasScholarshipSignal(
           pageIdentity
-        );
-
-      /*
-       * If page identity alone does not identify
-       * the category, use meaningful links.
-       */
-      if (
-        !type
-      ) {
-        type =
-          classifyLIC(
-            context
-          );
-      }
-
-      /*
-       * Never classify a generic page as a
-       * scholarship simply because a footer or
-       * navigation link contains the word.
-       */
-      if (
-        type ===
-        "scholarship" &&
-        !hasScholarshipSignal(
-          context
         )
       ) {
-        type = null;
+        type = "scholarship";
+      } else if (
+        hasAdmitSignal(
+          pageIdentity
+        )
+      ) {
+        type = "admit-card";
+      } else if (
+        hasAnswerKeySignal(
+          pageIdentity
+        )
+      ) {
+        type = "answer-key";
+      } else if (
+        hasResultSignal(
+          pageIdentity
+        )
+      ) {
+        type = "result";
+      } else if (
+        hasSyllabusSignal(
+          pageIdentity
+        )
+      ) {
+        type = "syllabus";
+      }
+
+      /*
+       * Then meaningful links.
+       */
+      if (!type) {
+        if (
+          hasScholarshipSignal(
+            meaningfulLinkText
+          )
+        ) {
+          type = "scholarship";
+        } else if (
+          hasAdmitSignal(
+            meaningfulLinkText
+          )
+        ) {
+          type = "admit-card";
+        } else if (
+          hasAnswerKeySignal(
+            meaningfulLinkText
+          )
+        ) {
+          type = "answer-key";
+        } else if (
+          hasResultSignal(
+            meaningfulLinkText
+          )
+        ) {
+          type = "result";
+        } else if (
+          hasSyllabusSignal(
+            meaningfulLinkText
+          )
+        ) {
+          type = "syllabus";
+        }
       }
 
       if (
-        type &&
-        type !== "job"
+        type
       ) {
         const title =
           buildLICTitle(
@@ -2320,11 +2558,6 @@ async function discoverLIC(source) {
             context
           );
 
-        /*
-         * Apply URL is useful for scholarship/
-         * admission pages too, but is never
-         * invented.
-         */
         const applyUrl =
           chooseApplyUrl(
             links,
@@ -2344,24 +2577,16 @@ async function discoverLIC(source) {
             "Life Insurance Corporation of India (LIC)",
 
           category:
-            type ===
-            "scholarship"
+            type === "scholarship"
               ? "LIC Scholarship"
-              : type ===
-                "admit-card"
+              : type === "admit-card"
               ? "LIC Admit Card"
-              : type ===
-                "answer-key"
+              : type === "answer-key"
               ? "LIC Answer Key"
-              : type ===
-                "result"
+              : type === "result"
               ? "LIC Result"
-              : type ===
-                "syllabus"
+              : type === "syllabus"
               ? "LIC Syllabus"
-              : type ===
-                "admission"
-              ? "LIC Admission"
               : "LIC Official Update",
 
           description:
@@ -2385,15 +2610,14 @@ async function discoverLIC(source) {
       }
     }
 
-    /*
-     * --------------------------------
-     * CRAWL NEXT LIC PAGES
-     * --------------------------------
-     */
+    /* -------------------------------- */
+    /* Crawl next LIC pages             */
+    /* -------------------------------- */
 
     if (
-      depth >=
-      MAX_DEPTH
+      depth >= MAX_DEPTH ||
+      visited.size >= MAX_PAGES ||
+      candidates.length >= CANDIDATE_LIMIT
     ) {
       return;
     }
@@ -2439,49 +2663,69 @@ async function discoverLIC(source) {
         )
         .filter(
           link => {
-            const value =
-              linkText(
+            const text =
+              getLinkText(
                 link
               );
 
             return (
               hasRecruitmentSignal(
-                value
+                text
               ) ||
               hasScholarshipSignal(
-                value
+                text
               ) ||
               hasAdmitSignal(
-                value
+                text
               ) ||
               hasResultSignal(
-                value
+                text
               ) ||
               hasAnswerKeySignal(
-                value
+                text
               ) ||
               hasSyllabusSignal(
-                value
+                text
               ) ||
-              /notification|advertisement|notice|corrigendum|schedule|current openings|opportunities/i.test(
-                value
+              /notification|advertisement|notice|corrigendum|schedule|current openings|opportunities|career/i.test(
+                text
               )
             );
           }
         )
         .sort(
           (a, b) => {
-            const scoreA =
+            let scoreA =
               scoreText(
-                linkText(a),
+                getLinkText(a),
                 SECTION_WORDS
               );
 
-            const scoreB =
+            let scoreB =
               scoreText(
-                linkText(b),
+                getLinkText(b),
                 SECTION_WORDS
               );
+
+            /*
+             * Strong recruitment URLs get
+             * additional priority.
+             */
+            if (
+              hasStrongRecruitmentSignal(
+                getLinkText(a)
+              )
+            ) {
+              scoreA += 100;
+            }
+
+            if (
+              hasStrongRecruitmentSignal(
+                getLinkText(b)
+              )
+            ) {
+              scoreB += 100;
+            }
 
             return (
               scoreB -
@@ -2494,15 +2738,8 @@ async function discoverLIC(source) {
       const next of nextPages
     ) {
       if (
-        visited.size >=
-        MAX_PAGES
-      ) {
-        break;
-      }
-
-      if (
-        candidates.length >=
-        CANDIDATE_LIMIT
+        visited.size >= MAX_PAGES ||
+        candidates.length >= CANDIDATE_LIMIT
       ) {
         break;
       }
@@ -2514,16 +2751,15 @@ async function discoverLIC(source) {
     }
   }
 
-  /* ----------------------------- */
-  /* Start discovery                */
-  /* ----------------------------- */
+  /* -------------------------------- */
+  /* Start                             */
+  /* -------------------------------- */
 
   for (
     const seed of seedPages
   ) {
     if (
-      candidates.length >=
-      CANDIDATE_LIMIT
+      candidates.length >= CANDIDATE_LIMIT
     ) {
       break;
     }
@@ -2538,7 +2774,7 @@ async function discoverLIC(source) {
     0,
     CANDIDATE_LIMIT
   );
-           }
+}
 /* -------------------------------- */
 /* Adapter registry                  */
 /* -------------------------------- */
