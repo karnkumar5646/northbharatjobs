@@ -485,35 +485,25 @@ export default {
           item.organization ||
           "Government Recruitment"
         )}</p>` +
+        `<section class="section">` +
+        `<h2>Overview</h2>` +
         `<div class="grid">` +
-        [
-          ["Category", item.type],
-          ["Qualification", item.qualification],
-          ["Vacancies", item.vacancies],
-          ["Age Limit", item.age_limit],
-          ["Fee", item.fee],
-          ["Selection", item.selection_process],
-          ["Salary", item.salary],
-          ["Application Start", item.application_start],
-          ["Last Date", item.last_date],
-          ["Exam Date", item.exam_date]
-        ]
-          .map(
-            ([k, v]) =>
-              `<div class="info">` +
-              `<b>${esc(k)}</b>` +
-              `<span>${esc(
-                v ||
-                "See Official Notification"
-              )}</span>` +
-              `</div>`
-          )
+        [["Category", item.type], ["Organization", item.organization], ["Location", item.location],
+          ["Qualification", item.qualification], ["Vacancies", item.vacancies], ["Age Limit", item.age_limit],
+          ["Age Relaxation", item.age_relaxation], ["Application Fee", item.fee], ["Application Start", item.application_start],
+          ["Last Date", item.last_date], ["Exam Date", item.exam_date], ["Selection Process", item.selection_process],
+          ["Salary / Pay Scale", item.salary]]
+          .map(([k,v]) => v ? `<div class="info"><b>${esc(k)}</b><span>${esc(v)}</span></div>` : "")
           .join("") +
-        `</div>` +
-        `<p>${esc(
-          item.description ||
-          "See the official source for the complete notification."
-        )}</p>` +
+        `</div></section>` +
+        `<section class="section"><h2>Eligibility & Job Requirements</h2>` +
+        `<div class="text-block">${esc(item.eligibility || item.qualification || "Not specified in the verified source.")}</div></section>` +
+        `<section class="section"><h2>Important Dates</h2>` +
+        `<div class="text-block">${esc(item.important_dates || "Not specified in the verified source.")}</div></section>` +
+        `<section class="section"><h2>How to Apply</h2>` +
+        `<div class="text-block">${esc(item.how_to_apply || "Use the official Apply Online link and follow the official notification instructions.")}</div></section>` +
+        `<section class="section"><h2>Verified Information</h2>` +
+        `<p class="muted">Verification: ${esc(item.verification_status || "unverified")} · Last verified: ${esc(item.last_verified_at || "Not available")}</p></section>` +
         `<div class="actions">` +
         `<a class="btn" href="${esc(
           item.official_url
