@@ -96,6 +96,69 @@ const GENERIC_URL_PARTS = [
 /* Useful content keywords          */
 /* -------------------------------- */
 
+const ADMINISTRATIVE_PATTERNS = [
+  "administrative",
+  "administration",
+  "office order",
+  "office memorandum",
+  "memorandum",
+  "right to information",
+  "rti",
+  "policy",
+  "procedure",
+  "guidelines",
+  "minutes",
+  "annual report",
+  "financial statement",
+  "press release",
+  "tender",
+  "procurement",
+  "vendor",
+  "customer care",
+  "citizen charter"
+];
+
+const STRONG_TYPE_PATTERNS = {
+  job: [
+    "recruitment",
+    "recruitment notification",
+    "recruitment notice",
+    "vacancy",
+    "vacancies",
+    "employment notice",
+    "direct recruitment",
+    "selection post",
+    "advertisement for recruitment",
+    "engagement of"
+  ],
+  answer_key: [
+    "answer key",
+    "provisional answer key",
+    "final answer key",
+    "answer-key"
+  ],
+  result: [
+    "final result",
+    "exam result",
+    "result of",
+    "result for",
+    "merit list",
+    "selection list",
+    "score card",
+    "scorecard"
+  ],
+  admit_card: [
+    "admit card",
+    "hall ticket",
+    "call letter"
+  ],
+  syllabus: [
+    "syllabus",
+    "exam pattern",
+    "scheme of examination"
+  ]
+};
+
 const TYPE_KEYWORDS = {
   job: [
     "recruitment",
@@ -353,74 +416,67 @@ function isGenericUrl(url) {
 function validateTypeContent(
   candidate
 ) {
-  const type =
-    candidate?.type;
+  const type = candidate?.type;
 
-  const text = normalizeText(
-    [
-      candidate?.title,
-      candidate?.description,
-      candidate?.official_url,
-      candidate?.source_url,
-      candidate?.organization
-    ].join(" ")
+  const text = normalizeText([
+    candidate?.title,
+    candidate?.description,
+    candidate?.official_url,
+    candidate?.source_url,
+    candidate?.organization
+  ].join(" "));
+
+  if (!TYPE_LABELS[type]) {
+    return { passed: false, reason: "Unknown item type" };
+  }
+
+  const hasStrongRecruitment =
+    STRONG_TYPE_PATTERNS.job.some(x => text.includes(normalizeText(x)));
+
+  const administrativeOnly =
+    ADMINISTRATIVE_PATTERNS.some(x => text.includes(normalizeText(x))) &&
+    !hasStrongRecruitment;
+
+  if (administrativeOnly) {
+    return {
+      passed: false,
+      reason: "Administrative/policy page without strong recruitment context"
+    };
+  }
+
+  if (type === "job") {
+    if (!hasStrongRecruitment) {
+      return { passed: false, reason: "Strong recruitment context not found" };
+    }
+    return { passed: true, reason: "Strong recruitment context verified" };
+  }
+
+  const strongPatterns = STRONG_TYPE_PATTERNS[type] || [];
+  const hasStrongType = strongPatterns.some(x =>
+    text.includes(normalizeText(x))
   );
 
-  if (
-    !TYPE_LABELS[type]
-  ) {
-    return {
-      passed: false,
-      reason: "Unknown item type"
-    };
-  }
-
-  /*
-   * Every non-generic item must
-   * contain meaningful type context.
-   */
-  if (
-    !containsKeyword(
-      text,
-      TYPE_KEYWORDS[type]
-    )
-  ) {
-    return {
-      passed: false,
-      reason:
-        `No ${TYPE_LABELS[type]} keyword found`
-    };
-  }
-
-  /*
-   * Jobs must contain recruitment
-   * context rather than generic
-   * navigation text.
-   */
-  if (
-    type === "job"
-  ) {
-    const recruitmentContext =
-      containsKeyword(
-        text,
-        TYPE_KEYWORDS.job
-      );
-
-    if (
-      !recruitmentContext
-    ) {
+  if (["answer_key","result","admit_card","syllabus"].includes(type)) {
+    if (!hasStrongType) {
       return {
         passed: false,
-        reason:
-          "Recruitment context not found"
+        reason: `Strong ${TYPE_LABELS[type]} context not found`
       };
     }
+    return {
+      passed: true,
+      reason: `Strong ${TYPE_LABELS[type]} context verified`
+    };
   }
 
-  return {
-    passed: true,
-    reason: "Type context verified"
-  };
+  if (!containsKeyword(text, TYPE_KEYWORDS[type])) {
+    return {
+      passed: false,
+      reason: `No ${TYPE_LABELS[type]} keyword found`
+    };
+  }
+
+  return { passed: true, reason: "Type context verified" };
 }
 
 /* -------------------------------- */
